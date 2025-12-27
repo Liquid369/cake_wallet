@@ -142,6 +142,8 @@ abstract class ElectrumWalletBase
           return bitcoinCashHDWallet(seedBytes);
         case CryptoCurrency.doge:
           return dogecoinHDWallet(seedBytes);
+        case CryptoCurrency.pivx:
+          return pivxHDWallet(seedBytes);
         default:
           throw Exception("Unsupported currency");
       }
@@ -156,6 +158,9 @@ abstract class ElectrumWalletBase
 
   static Bip32Slip10Secp256k1 dogecoinHDWallet(Uint8List seedBytes) =>
       Bip32Slip10Secp256k1.fromSeed(seedBytes).derivePath("m/44'/3'/0'") as Bip32Slip10Secp256k1;
+
+  static Bip32Slip10Secp256k1 pivxHDWallet(Uint8List seedBytes) =>
+      Bip32Slip10Secp256k1.fromSeed(seedBytes).derivePath("m/44'/119'/0'") as Bip32Slip10Secp256k1;
 
   static int estimatedTransactionSize(int inputsCount, int outputsCounts) =>
       inputsCount * 68 + outputsCounts * 34 + 10;
@@ -714,6 +719,12 @@ abstract class ElectrumWalletBase
           return utx.bitcoinAddressRecord.type == SegwitAddresType.mweb;
         case UnspentCoinType.nonMweb:
           return utx.bitcoinAddressRecord.type != SegwitAddresType.mweb;
+        case UnspentCoinType.sapling:
+          // PIVX shielded notes - not tracked as UTXOs
+          return false;
+        case UnspentCoinType.transparent:
+          // PIVX transparent - all regular UTXOs
+          return true;
         case UnspentCoinType.any:
           return true;
       }
@@ -2213,6 +2224,9 @@ abstract class ElectrumWalletBase
             .map((type) => fetchTransactionsForAddressType(historiesWithDetails, type)));
       } else if (type == WalletType.dogecoin) {
         await Future.wait(DOGECOIN_ADDRESS_TYPES
+            .map((type) => fetchTransactionsForAddressType(historiesWithDetails, type)));
+      } else if (type == WalletType.pivx) {
+        await Future.wait(PIVX_ADDRESS_TYPES
             .map((type) => fetchTransactionsForAddressType(historiesWithDetails, type)));
       }
 

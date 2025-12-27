@@ -40,7 +40,8 @@ class MenuWidgetState extends State<MenuWidget> {
         this.wowneroIcon = Image.asset('assets/images/crypto/wownero.webp'),
         this.zanoIcon = Image.asset('assets/images/crypto/zano.webp'),
         this.decredIcon = Image.asset('assets/images/crypto/decred.webp'),
-        this.dogecoinIcon = Image.asset('assets/images/crypto/dogecoin.webp');
+        this.dogecoinIcon = Image.asset('assets/images/crypto/dogecoin.webp'),
+        this.pivxIcon = Image.asset('assets/images/pivx_icon.png');
 
   final largeScreen = 731;
 
@@ -70,6 +71,7 @@ class MenuWidgetState extends State<MenuWidget> {
   Image zanoIcon;
   Image decredIcon;
   Image dogecoinIcon;
+  Image pivxIcon;
 
   @override
   void initState() {
@@ -265,6 +267,8 @@ class MenuWidgetState extends State<MenuWidget> {
         return decredIcon;
       case WalletType.dogecoin:
         return dogecoinIcon;
+      case WalletType.pivx:
+        return pivxIcon;
       default:
         throw Exception('No icon for ${type.toString()}');
     }

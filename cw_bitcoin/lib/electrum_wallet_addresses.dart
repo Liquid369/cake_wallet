@@ -36,6 +36,10 @@ const List<BitcoinAddressType> DOGECOIN_ADDRESS_TYPES = [
   P2pkhAddressType.p2pkh,
 ];
 
+const List<BitcoinAddressType> PIVX_ADDRESS_TYPES = [
+  P2pkhAddressType.p2pkh,
+];
+
 abstract class ElectrumWalletAddressesBase extends WalletAddresses with Store {
   ElectrumWalletAddressesBase(
     WalletInfo walletInfo, {
@@ -285,6 +289,8 @@ abstract class ElectrumWalletAddressesBase extends WalletAddresses with Store {
       }
     } else if (walletInfo.type == WalletType.dogecoin) {
       await _generateInitialAddresses(type: P2pkhAddressType.p2pkh);
+    } else if (walletInfo.type == WalletType.pivx) {
+      await _generateInitialAddresses(type: P2pkhAddressType.p2pkh);
     } else if (walletInfo.type == WalletType.bitcoin) {
       await _generateInitialAddresses();
       if (!isHardwareWallet) {
@@ -522,6 +528,9 @@ abstract class ElectrumWalletAddressesBase extends WalletAddresses with Store {
           addP2PKHAddressTypes();
           break;
         case WalletType.dogecoin:
+          addP2PKHAddressTypes();
+          break;
+        case WalletType.pivx:
           addP2PKHAddressTypes();
           break;
         default:

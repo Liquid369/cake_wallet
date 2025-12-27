@@ -196,7 +196,8 @@ abstract class ExchangeViewModelBase extends WalletChangeListenerViewModel with 
         WalletType.bitcoin,
         WalletType.litecoin,
         WalletType.bitcoinCash,
-        WalletType.dogecoin
+        WalletType.dogecoin,
+        WalletType.pivx
       ].contains(wallet.type);
 
   bool get hideAddressAfterExchange =>
@@ -346,6 +347,7 @@ abstract class ExchangeViewModelBase extends WalletChangeListenerViewModel with 
         WalletType.litecoin,
         WalletType.bitcoinCash,
         WalletType.dogecoin,
+        WalletType.pivx,
       ].contains(wallet.type) &&
       depositCurrency == wallet.currency;
 
@@ -782,6 +784,7 @@ abstract class ExchangeViewModelBase extends WalletChangeListenerViewModel with 
       WalletType.bitcoin,
       WalletType.bitcoinCash,
       WalletType.dogecoin,
+      WalletType.pivx,
     ].contains(wallet.type)) {
       final priority = _settingsStore.priority[wallet.type]!;
 
@@ -852,6 +855,10 @@ abstract class ExchangeViewModelBase extends WalletChangeListenerViewModel with 
         break;
       case WalletType.dogecoin:
         depositCurrency = CryptoCurrency.doge;
+        receiveCurrency = CryptoCurrency.xmr;
+        break;
+      case WalletType.pivx:
+        depositCurrency = CryptoCurrency.pivx;
         receiveCurrency = CryptoCurrency.xmr;
         break;
       case WalletType.haven:

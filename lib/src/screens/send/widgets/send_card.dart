@@ -759,6 +759,42 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                     ),
                   ),
                 ),
+              // PIVX Shielded/Transparent toggle
+              if (sendViewModel.currency == CryptoCurrency.pivx)
+                Observer(
+                  builder: (_) => Padding(
+                    padding: EdgeInsets.only(top: 14),
+                    child: GestureDetector(
+                      key: ValueKey('send_page_pivx_shielded_toggle_key'),
+                      onTap: () {
+                        final isShielded = widget.sendViewModel.coinTypeToSpendFrom == UnspentCoinType.sapling;
+                        sendViewModel.setPivxCoinType(
+                          isShielded ? UnspentCoinType.transparent : UnspentCoinType.sapling
+                        );
+                      },
+                      child: Container(
+                        color: Colors.transparent,
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            StandardCheckbox(
+                              caption: 'Send from shielded balance',
+                              captionColor: Theme.of(context).colorScheme.onSurfaceVariant,
+                              borderColor: Theme.of(context).colorScheme.primary,
+                              iconColor: Theme.of(context).colorScheme.primary,
+                              value: widget.sendViewModel.coinTypeToSpendFrom == UnspentCoinType.sapling,
+                              onChanged: (bool? value) {
+                                sendViewModel.setPivxCoinType(
+                                  (value ?? false) ? UnspentCoinType.sapling : UnspentCoinType.transparent
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
             ],
           ),
         ),

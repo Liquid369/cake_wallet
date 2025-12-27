@@ -83,6 +83,8 @@ class PendingBitcoinTransaction with PendingTransaction {
         return "BCH";
       case WalletType.dogecoin:
         return "DOGE";
+      case WalletType.pivx:
+        return "PIVX";
       default:
         return type.name;
     }

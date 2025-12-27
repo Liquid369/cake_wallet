@@ -49,6 +49,9 @@ Future<List<Node>> loadDefaultNodes(WalletType type) async {
     case WalletType.dogecoin:
       path = 'assets/dogecoin_electrum_server_list.yml';
       break;
+    case WalletType.pivx:
+      path = 'assets/pivx_electrum_server_list.yml';
+      break;
     case WalletType.base:
       path = 'assets/base_node_list.yml';
       break;
@@ -106,6 +109,7 @@ Future<void> resetToDefault(Box<Node> nodeSource) async {
   final decredNodes = await loadDefaultNodes(WalletType.decred);
   final zanoNodes = await loadDefaultNodes(WalletType.zano);
   final dogecoinElectrumServerList = await loadDefaultNodes(WalletType.dogecoin);
+  final pivxElectrumServerList = await loadDefaultNodes(WalletType.pivx);
   final baseNodes = await loadDefaultNodes(WalletType.base);
   final arbitrumNodes = await loadDefaultNodes(WalletType.arbitrum);
 
@@ -122,6 +126,7 @@ Future<void> resetToDefault(Box<Node> nodeSource) async {
       zanoNodes +
       decredNodes +
       dogecoinElectrumServerList +
+      pivxElectrumServerList +
       baseNodes +
       arbitrumNodes;
 

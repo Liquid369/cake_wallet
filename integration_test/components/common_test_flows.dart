@@ -370,6 +370,8 @@ class CommonTestFlows {
         return secrets.decredTestWalletSeeds;
       case WalletType.dogecoin:
         return secrets.dogeTestWalletSeeds;
+      case WalletType.pivx:
+        return secrets.dogeTestWalletSeeds; // TODO: Add PIVX test wallet seeds
       case WalletType.none:
       case WalletType.haven:
       case WalletType.banano:

@@ -421,6 +421,8 @@ abstract class ExchangeTradeViewModelBase with Store {
         return BitcoinCashURI(amount: amount, address: inputAddress);
       case WalletType.dogecoin:
         return DogeURI(amount: amount, address: inputAddress);
+      case WalletType.pivx:
+        return PivxURI(amount: amount, address: inputAddress);
       case WalletType.ethereum:
         return _createERC681URI(fromCurrency, inputAddress, amount);
       // TODO: Expand ERC681URI support to Polygon(modify decoding flow for QRs, pay anything, and deep link handling)

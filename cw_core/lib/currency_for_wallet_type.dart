@@ -40,6 +40,8 @@ CryptoCurrency walletTypeToCryptoCurrency(WalletType type, {bool isTestnet = fal
       return CryptoCurrency.dcr;
     case WalletType.dogecoin:
       return CryptoCurrency.doge;
+    case WalletType.pivx:
+      return CryptoCurrency.pivx;
     case WalletType.none:
       throw Exception(
           'Unexpected wallet type: ${type.toString()} for CryptoCurrency walletTypeToCryptoCurrency');

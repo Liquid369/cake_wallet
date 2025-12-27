@@ -98,6 +98,9 @@ abstract class TransactionDetailsViewModelBase with Store {
       case WalletType.dogecoin:
         _addDogecoinListItems(tx, dateFormat);
         break;
+      case WalletType.pivx:
+        _addPivxListItems(tx, dateFormat);
+        break;
       case WalletType.none:
       case WalletType.banano:
         break;
@@ -205,6 +208,8 @@ abstract class TransactionDetailsViewModelBase with Store {
         return 'https://${wallet.isTestnet ? "testnet" : "dcrdata"}.decred.org/tx/${txId.split(':')[0]}';
       case WalletType.dogecoin:
         return 'https://blockchair.com/dogecoin/transaction/${txId}';
+      case WalletType.pivx:
+        return 'https://chainz.cryptoid.info/pivx/tx.dws?${txId}.htm';
       case WalletType.base:
         return 'https://basescan.org/tx/${txId}';
       case WalletType.arbitrum:
@@ -223,6 +228,7 @@ abstract class TransactionDetailsViewModelBase with Store {
       case WalletType.litecoin:
       case WalletType.bitcoinCash:
       case WalletType.dogecoin:
+      case WalletType.pivx:
         return S.current.view_transaction_on + 'Blockchair.com';
       case WalletType.haven:
         return S.current.view_transaction_on + 'explorer.havenprotocol.org';
@@ -874,6 +880,51 @@ abstract class TransactionDetailsViewModelBase with Store {
   }
 
   void _addDogecoinListItems(TransactionInfo tx, DateFormat dateFormat) {
+    final _items = [
+      StandartListItem(
+        title: S.current.transaction_details_transaction_id,
+        value: tx.txHash,
+        key: ValueKey('standard_list_item_transaction_details_id_key'),
+      ),
+      StandartListItem(
+        title: S.current.transaction_details_date,
+        value: dateFormat.format(tx.date),
+        key: ValueKey('standard_list_item_transaction_details_date_key'),
+      ),
+      StandartListItem(
+        title: S.current.transaction_details_height,
+        value: '${tx.height}',
+        key: ValueKey('standard_list_item_transaction_details_height_key'),
+      ),
+      StandartListItem(
+        title: S.current.transaction_details_amount,
+        value: tx.amountFormatted(),
+        key: ValueKey('standard_list_item_transaction_details_amount_key'),
+      ),
+      if (tx.feeFormatted()?.isNotEmpty ?? false)
+        StandartListItem(
+          title: S.current.transaction_details_fee,
+          value: tx.feeFormatted()!,
+          key: ValueKey('standard_list_item_transaction_details_fee_key'),
+        ),
+      if (showRecipientAddress && tx.to != null)
+        StandartListItem(
+          title: S.current.transaction_details_recipient_address,
+          value: tx.to!,
+          key: ValueKey('standard_list_item_transaction_details_recipient_address_key'),
+        ),
+      if (tx.from != null)
+        StandartListItem(
+          title: S.current.transaction_details_source_address,
+          value: tx.from!,
+          key: ValueKey('standard_list_item_transaction_details_source_address_key'),
+        ),
+    ];
+
+    items.addAll(_items);
+  }
+
+  void _addPivxListItems(TransactionInfo tx, DateFormat dateFormat) {
     final _items = [
       StandartListItem(
         title: S.current.transaction_details_transaction_id,

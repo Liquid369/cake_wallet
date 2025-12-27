@@ -12,6 +12,7 @@ import 'package:cake_wallet/utils/show_pop_up.dart';
 import 'package:cake_wallet/view_model/dashboard/dashboard_view_model.dart';
 import 'package:cw_core/crypto_currency.dart';
 import 'package:cw_core/unspent_coin_type.dart';
+import 'package:cw_core/wallet_type.dart';
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -389,35 +390,7 @@ class BalanceRowWidget extends StatelessWidget {
                               Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  GestureDetector(
-                                    behavior: HitTestBehavior.opaque,
-                                    onTap: () => launchUrl(
-                                      Uri.parse(
-                                          "https://docs.cakewallet.com/cryptos/litecoin#mweb"),
-                                      mode: LaunchMode.externalApplication,
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        Text(
-                                          '${secondAvailableBalanceLabel}',
-                                          textAlign: TextAlign.center,
-                                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                                color:
-                                                    Theme.of(context).colorScheme.onSurfaceVariant,
-                                                height: 1,
-                                              ),
-                                        ),
-                                        Padding(
-                                          padding: const EdgeInsets.symmetric(horizontal: 4),
-                                          child: Icon(
-                                            Icons.help_outline,
-                                            size: 16,
-                                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                          ),
-                                        )
-                                      ],
-                                    ),
-                                  ),
+                                  _buildSecondBalanceLabel(context),
                                   SizedBox(height: 8),
                                   AutoSizeText(
                                     secondAvailableBalance,
@@ -658,5 +631,43 @@ class BalanceRowWidget extends StatelessWidget {
         backgroundColor: Color.fromRGBO(0, 0, 0, 0.85),
       );
     } catch (_) {}
+  }
+
+  Widget _buildSecondBalanceLabel(BuildContext context) {
+    final labelText = Text(
+      '$secondAvailableBalanceLabel',
+      textAlign: TextAlign.center,
+      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            height: 1,
+          ),
+    );
+
+    // Only Litecoin MWEB has a help link, show plain label for other wallet types
+    if (dashboardViewModel.type == WalletType.litecoin) {
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => launchUrl(
+          Uri.parse("https://docs.cakewallet.com/cryptos/litecoin#mweb"),
+          mode: LaunchMode.externalApplication,
+        ),
+        child: Row(
+          children: [
+            labelText,
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Icon(
+                Icons.help_outline,
+                size: 16,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            )
+          ],
+        ),
+      );
+    }
+
+    // For PIVX and other wallet types, just show the label without help icon
+    return labelText;
   }
 }

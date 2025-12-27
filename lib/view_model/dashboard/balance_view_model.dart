@@ -184,6 +184,8 @@ abstract class BalanceViewModelBase with Store {
     switch (wallet.type) {
       case WalletType.litecoin:
         return S.current.mweb_confirmed;
+      case WalletType.pivx:
+        return S.current.shielded;
       default:
         return S.current.confirmed;
     }
@@ -194,6 +196,8 @@ abstract class BalanceViewModelBase with Store {
     switch (wallet.type) {
       case WalletType.litecoin:
         return S.current.mweb_unconfirmed;
+      case WalletType.pivx:
+        return S.current.shielded_unconfirmed;
       default:
         return S.current.unconfirmed;
     }
@@ -296,12 +300,20 @@ abstract class BalanceViewModelBase with Store {
   }
 
   @computed
-  bool get hasSecondAdditionalBalance =>
-      mwebEnabled && _hasSecondAdditionalBalanceForWalletType(wallet.type);
+  bool get hasSecondAdditionalBalance {
+    if (wallet.type == WalletType.pivx) {
+      return _hasSecondAdditionalBalanceForWalletType(wallet.type);
+    }
+    return mwebEnabled && _hasSecondAdditionalBalanceForWalletType(wallet.type);
+  }
 
   @computed
-  bool get hasSecondAvailableBalance =>
-      mwebEnabled && _hasSecondAvailableBalanceForWalletType(wallet.type);
+  bool get hasSecondAvailableBalance {
+    if (wallet.type == WalletType.pivx) {
+      return _hasSecondAvailableBalanceForWalletType(wallet.type);
+    }
+    return mwebEnabled && _hasSecondAvailableBalanceForWalletType(wallet.type);
+  }
 
   bool _hasAdditionalBalanceForWalletType(WalletType type) {
     switch (type) {
@@ -321,11 +333,21 @@ abstract class BalanceViewModelBase with Store {
         return true;
       }
     }
+    if (wallet.type == WalletType.pivx) {
+      // Show pending shielded balance if non-zero
+      if ((wallet.balance[CryptoCurrency.pivx]?.secondAdditional ?? 0) != 0) {
+        return true;
+      }
+    }
     return false;
   }
 
   bool _hasSecondAvailableBalanceForWalletType(WalletType type) {
     if (wallet.type == WalletType.litecoin) {
+      return true;
+    }
+    if (wallet.type == WalletType.pivx) {
+      // PIVX always shows shielded balance when Sapling is enabled
       return true;
     }
     return false;

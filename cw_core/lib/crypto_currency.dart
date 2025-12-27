@@ -197,7 +197,7 @@ class CryptoCurrency extends EnumerableItem<int> with Serializable<int> implemen
   static const near = CryptoCurrency(title: 'NEAR', fullName: 'NEAR Protocol', raw: 53, name: 'near', iconPath: 'assets/images/near_icon.png', decimals: 24);
   static const oxt = CryptoCurrency(title: 'OXT', tag: 'ETH', fullName: 'Orchid', raw: 54, name: 'oxt', iconPath: 'assets/images/oxt_icon.png', decimals: 18);
   static const paxg = CryptoCurrency(title: 'PAXG', tag: 'ETH', fullName: 'Pax Gold', raw: 55, name: 'paxg', iconPath: 'assets/images/paxg_icon.png', decimals: 18);
-  static const pivx = CryptoCurrency(title: 'PIVX', raw: 56, name: 'pivx', iconPath: 'assets/images/pivx_icon.png', decimals: 8);
+  static const pivx = CryptoCurrency(title: 'PIVX', fullName: 'PIVX', raw: 56, name: 'pivx', iconPath: 'assets/images/pivx_icon.png', decimals: 8);
   static const rune = CryptoCurrency(title: 'RUNE', fullName: 'Thorchain', raw: 57, name: 'rune', iconPath: 'assets/images/rune_icon.png', decimals: 18);
   static const rvn = CryptoCurrency(title: 'RVN', fullName: 'Ravencoin', raw: 58, name: 'rvn', iconPath: 'assets/images/rvn_icon.png', decimals: 8);
   static const scrt = CryptoCurrency(title: 'SCRT', fullName: 'Secret Network', raw: 59, name: 'scrt', iconPath: 'assets/images/scrt_icon.png', decimals: 6);

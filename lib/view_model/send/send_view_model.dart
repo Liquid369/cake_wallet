@@ -168,6 +168,17 @@ abstract class SendViewModelBase extends WalletChangeListenerViewModel with Stor
     }
   }
 
+  @action
+  void setPivxCoinType(UnspentCoinType type) {
+    if (wallet.type == WalletType.pivx) {
+      coinTypeToSpendFrom = type;
+    }
+  }
+
+  /// Whether we are using shielded (Sapling) coins for PIVX
+  bool get isPivxShieldedMode => 
+      wallet.type == WalletType.pivx && coinTypeToSpendFrom == UnspentCoinType.sapling;
+
   @computed
   bool get isBatchSending => outputs.length > 1;
 
@@ -296,6 +307,22 @@ abstract class SendViewModelBase extends WalletChangeListenerViewModel with Stor
       case WalletType.litecoin:
       case WalletType.bitcoinCash:
       case WalletType.dogecoin:
+        return wallet.formatCryptoAmount(
+            (await unspentCoinsListViewModel.getSendingBalance(coinTypeToSpendFrom)).toString());
+      case WalletType.pivx:
+        // For PIVX, handle shielded vs transparent balance
+        if (coinTypeToSpendFrom == UnspentCoinType.sapling) {
+          // Return shielded balance from the wallet's secondConfirmed
+          final pivxBalance = wallet.balance[CryptoCurrency.pivx];
+          if (pivxBalance != null) {
+            return wallet.formatCryptoAmount(pivxBalance.secondAvailable.toString());
+          }
+          return '0';
+        } else {
+          // Return transparent UTXO balance
+          return wallet.formatCryptoAmount(
+              (await unspentCoinsListViewModel.getSendingBalance(UnspentCoinType.transparent)).toString());
+        }
       case WalletType.monero:
       case WalletType.wownero:
       case WalletType.decred:
@@ -345,7 +372,8 @@ abstract class SendViewModelBase extends WalletChangeListenerViewModel with Stor
         WalletType.wownero,
         WalletType.decred,
         WalletType.bitcoinCash,
-        WalletType.dogecoin
+        WalletType.dogecoin,
+        WalletType.pivx
       ].contains(wallet.type);
 
   @computed
@@ -353,7 +381,8 @@ abstract class SendViewModelBase extends WalletChangeListenerViewModel with Stor
         WalletType.bitcoin,
         WalletType.litecoin,
         WalletType.bitcoinCash,
-        WalletType.dogecoin
+        WalletType.dogecoin,
+        WalletType.pivx
       ].contains(wallet.type);
 
   @observable
@@ -886,6 +915,7 @@ abstract class SendViewModelBase extends WalletChangeListenerViewModel with Stor
       case WalletType.bitcoin:
       case WalletType.bitcoinCash:
       case WalletType.dogecoin:
+      case WalletType.pivx:
         return bitcoin!.createBitcoinTransactionCredentials(
           outputs,
           priority: priority!,

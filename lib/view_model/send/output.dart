@@ -113,6 +113,7 @@ abstract class OutputBase with Store {
           case WalletType.litecoin:
           case WalletType.bitcoinCash:
           case WalletType.dogecoin:
+          case WalletType.pivx:
             _amount = bitcoin!.formatterStringDoubleToBitcoinAmount(_cryptoAmount);
             break;
           case WalletType.decred:
@@ -191,6 +192,7 @@ abstract class OutputBase with Store {
         case WalletType.litecoin:
         case WalletType.bitcoinCash:
         case WalletType.dogecoin:
+        case WalletType.pivx:
           estimatedFee = bitcoin!.formatterBitcoinAmountToDouble(amount: fee).toString();
           break;
         case WalletType.solana:
@@ -396,6 +398,7 @@ abstract class OutputBase with Store {
       case WalletType.litecoin:
       case WalletType.bitcoinCash:
       case WalletType.dogecoin:
+      case WalletType.pivx:
         maximumFractionDigits = 8;
         break;
       case WalletType.wownero:

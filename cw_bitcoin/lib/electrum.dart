@@ -106,15 +106,35 @@ class ElectrumClient {
       (Uint8List event) {
         try {
           final msg = utf8.decode(event.toList());
-          final messagesList = msg.split("\n");
-          for (var message in messagesList) {
-            if (message.isEmpty) {
-              continue;
+          // DEBUG: Log incoming data size
+          if (msg.length > 1000) {
+            print('[ElectrumClient] Received large packet: ${msg.length} bytes, first 100 chars: ${msg.substring(0, 100)}');
+          }
+          
+          // Accumulate data first, THEN split by newlines
+          // This handles large responses that span multiple TCP packets
+          unterminatedString += msg;
+          
+          // Process only complete lines (ending with \n)
+          while (unterminatedString.contains('\n')) {
+            final newlineIndex = unterminatedString.indexOf('\n');
+            final completeLine = unterminatedString.substring(0, newlineIndex);
+            unterminatedString = unterminatedString.substring(newlineIndex + 1);
+            
+            if (completeLine.isNotEmpty) {
+              // DEBUG: Log when processing Sapling-related responses
+              if (completeLine.contains('sapling') || completeLine.length > 5000) {
+                print('[ElectrumClient] Processing line of ${completeLine.length} chars');
+              }
+              _parseResponse(completeLine);
             }
-            _parseResponse(message);
+          }
+          // Any remaining data in unterminatedString will be combined with next packet
+          if (unterminatedString.length > 1000) {
+            print('[ElectrumClient] Buffered partial data: ${unterminatedString.length} bytes');
           }
         } catch (e) {
-          printV("socket.listen: $e");
+          print("socket.listen: $e");
         }
       },
       onError: (Object error) {
@@ -148,36 +168,11 @@ class ElectrumClient {
       final response = json.decode(message) as Map<String, dynamic>;
       _handleResponse(response);
     } on FormatException catch (e) {
-      final msg = e.message.toLowerCase();
-
-      if (e.source is String) {
-        unterminatedString += e.source as String;
-      }
-
-      if (msg.contains("not a subtype of type")) {
-        unterminatedString += e.source as String;
-        return;
-      }
-
-      if (isJSONStringCorrect(unterminatedString)) {
-        final response = json.decode(unterminatedString) as Map<String, dynamic>;
-        _handleResponse(response);
-        unterminatedString = '';
-      }
+      // Log parse errors for debugging - should be rare now with proper line accumulation
+      printV("[ElectrumClient] JSON parse error: ${e.message}");
+      printV("[ElectrumClient] Problematic message (first 200 chars): ${message.substring(0, message.length > 200 ? 200 : message.length)}");
     } on TypeError catch (e) {
-      if (!e.toString().contains('Map<String, Object>') &&
-          !e.toString().contains('Map<String, dynamic>')) {
-        return;
-      }
-
-      unterminatedString += message;
-
-      if (isJSONStringCorrect(unterminatedString)) {
-        final response = json.decode(unterminatedString) as Map<String, dynamic>;
-        _handleResponse(response);
-        // unterminatedString = null;
-        unterminatedString = '';
-      }
+      printV("[ElectrumClient] Type error parsing response: $e");
     } catch (e) {
       printV("parse $e");
     }
@@ -449,14 +444,24 @@ class ElectrumClient {
 
   Future<dynamic> call(
       {required String method, List<Object> params = const [], Function(int)? idCallback}) async {
-    if (!isConnected) return null;
+    if (!isConnected) {
+      print('[ElectrumClient] call($method) - NOT CONNECTED, returning null');
+      return null;
+    }
 
     final completer = Completer<dynamic>();
     _id += 1;
     final id = _id;
     idCallback?.call(id);
     _registryTask(id, completer);
-    socket!.write(jsonrpc(method: method, id: id, params: params));
+    
+    final request = jsonrpc(method: method, id: id, params: params);
+    // DEBUG: Log Sapling requests
+    if (method.contains('sapling')) {
+      print('[ElectrumClient] Sending request id=$id, method=$method, params=$params');
+      print('[ElectrumClient] Raw request: ${request.trim()}');
+    }
+    socket!.write(request);
 
     return completer.future;
   }
@@ -572,8 +577,16 @@ class ElectrumClient {
 
   void _handleResponse(Map<String, dynamic> response) {
     final method = response['method'];
-    final id = response['id'] as String?;
+    final rawId = response['id'];
+    // Handle id as either int or String
+    final id = rawId?.toString();
     final result = response['result'];
+    
+    // Debug logging for Sapling responses
+    final hasLargeResult = result is List && result.length > 0;
+    if (hasLargeResult || rawId != null) {
+      print('[ElectrumClient] Response: id=$id (${rawId.runtimeType}), method=$method, result type=${result.runtimeType}${result is List ? ', length=${result.length}' : ''}');
+    }
 
     try {
       final error = response['error'] as Map<String, dynamic>?;
@@ -581,6 +594,7 @@ class ElectrumClient {
         final errorMessage = error['message'] as String?;
         if (errorMessage != null) {
           _errors[id!] = errorMessage;
+          print('[ElectrumClient] Error for id=$id: $errorMessage');
         }
       }
     } catch (_) {}

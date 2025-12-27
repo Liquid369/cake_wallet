@@ -49,7 +49,7 @@ abstract class UnspentCoinsDetailsViewModelBase with Store {
           })
     ];
 
-    if ([WalletType.bitcoin, WalletType.litecoin, WalletType.bitcoinCash, WalletType.dogecoin].contains(_type)) {
+    if ([WalletType.bitcoin, WalletType.litecoin, WalletType.bitcoinCash, WalletType.dogecoin, WalletType.pivx].contains(_type)) {
       items.add(BlockExplorerListItem(
         title: S.current.view_in_block_explorer,
         value: _explorerDescription(_type),
@@ -73,6 +73,8 @@ abstract class UnspentCoinsDetailsViewModelBase with Store {
         return 'https://blockchair.com/bitcoin-cash/transaction/${txId}';
       case WalletType.dogecoin:
         return 'https://dogechain.info/tx/${txId}';
+      case WalletType.pivx:
+        return 'https://chainz.cryptoid.info/pivx/tx.dws?${txId}.htm';
       default:
         return '';
     }
@@ -88,6 +90,8 @@ abstract class UnspentCoinsDetailsViewModelBase with Store {
         return S.current.view_transaction_on + 'Blockchair.com';
       case WalletType.dogecoin:
         return S.current.view_transaction_on + 'Dogechain.info';
+      case WalletType.pivx:
+        return S.current.view_transaction_on + 'Chainz.cryptoid.info';
       default:
         return '';
     }

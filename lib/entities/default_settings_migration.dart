@@ -50,6 +50,7 @@ const zanoDefaultNodeUri = '37.27.100.59:10500';
 const moneroWorldNodeUri = '.moneroworld.com';
 const decredDefaultUri = "default-spv-nodes";
 const dogecoinDefaultNodeUri = 'dogecoin.stackwallet.com:50022';
+const pivxDefaultNodeUri = 'electrum.coinspect.co:50002';
 const baseDefaultNodeUri = 'base.nownodes.io';
 const arbitrumDefaultNodeUri = 'arbitrum.nownodes.io';
 
@@ -668,6 +669,8 @@ String _getDefaultNodeUri(WalletType type) {
       return decredDefaultUri;
     case WalletType.dogecoin:
       return dogecoinDefaultNodeUri;
+    case WalletType.pivx:
+      return pivxDefaultNodeUri;
     case WalletType.base:
       return baseDefaultNodeUri;
     case WalletType.arbitrum:
@@ -1088,6 +1091,8 @@ Future<void> checkCurrentNodes(
       sharedPreferences.getInt(PreferencesKey.currentBitcoinCashNodeIdKey);
   final currentDogecoinNodeId =
   sharedPreferences.getInt(PreferencesKey.currentDogecoinNodeIdKey);
+  final currentPivxNodeId =
+  sharedPreferences.getInt(PreferencesKey.currentPivxNodeIdKey);
   final currentSolanaNodeId = sharedPreferences.getInt(PreferencesKey.currentSolanaNodeIdKey);
   final currentTronNodeId = sharedPreferences.getInt(PreferencesKey.currentTronNodeIdKey);
   final currentWowneroNodeId = sharedPreferences.getInt(PreferencesKey.currentWowneroNodeIdKey);
@@ -1118,6 +1123,8 @@ Future<void> checkCurrentNodes(
       nodeSource.values.firstWhereOrNull((node) => node.key == currentBitcoinCashNodeId);
   final currentDogecoinNodeServer =
       nodeSource.values.firstWhereOrNull((node) => node.key == currentDogecoinNodeId);
+  final currentPivxNodeServer =
+      nodeSource.values.firstWhereOrNull((node) => node.key == currentPivxNodeId);
   final currentSolanaNodeServer =
       nodeSource.values.firstWhereOrNull((node) => node.key == currentSolanaNodeId);
   final currentTronNodeServer =
@@ -1191,6 +1198,12 @@ Future<void> checkCurrentNodes(
     final node = Node(uri: dogecoinDefaultNodeUri, type: WalletType.dogecoin, useSSL: true);
     await nodeSource.add(node);
     await sharedPreferences.setInt(PreferencesKey.currentDogecoinNodeIdKey, node.key as int);
+  }
+
+  if (currentPivxNodeServer == null) {
+    final node = Node(uri: pivxDefaultNodeUri, type: WalletType.pivx, useSSL: true);
+    await nodeSource.add(node);
+    await sharedPreferences.setInt(PreferencesKey.currentPivxNodeIdKey, node.key as int);
   }
 
   if (currentPolygonNodeServer == null) {

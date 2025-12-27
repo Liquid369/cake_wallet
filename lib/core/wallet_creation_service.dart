@@ -83,6 +83,7 @@ class WalletCreationService {
       case WalletType.solana:
       case WalletType.tron:
       case WalletType.dogecoin:
+      case WalletType.pivx:
       case WalletType.nano:
         return true;
       case WalletType.monero:

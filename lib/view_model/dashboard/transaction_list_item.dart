@@ -179,6 +179,7 @@ class TransactionListItem extends ActionListItem with Keyable {
       case WalletType.litecoin:
       case WalletType.bitcoinCash:
       case WalletType.dogecoin:
+      case WalletType.pivx:
         amount = calculateFiatAmountRaw(
             cryptoAmount: bitcoin!.formatterBitcoinAmountToDouble(amount: transaction.amount),
             price: price);

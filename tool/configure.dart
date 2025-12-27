@@ -12,6 +12,7 @@ const wowneroOutputPath = 'lib/wownero/wownero.dart';
 const zanoOutputPath = 'lib/zano/zano.dart';
 const decredOutputPath = 'lib/decred/decred.dart';
 const dogecoinOutputPath = 'lib/dogecoin/dogecoin.dart';
+const pivxOutputPath = 'lib/pivx/pivx.dart';
 const baseOutputPath = 'lib/base/base.dart';
 const arbitrumOutputPath = 'lib/arbitrum/arbitrum.dart';
 const walletTypesPath = 'lib/wallet_types.g.dart';
@@ -34,6 +35,7 @@ Future<void> main(List<String> args) async {
   final hasZano = args.contains('${prefix}zano');
   final hasDecred = args.contains('${prefix}decred');
   final hasDogecoin = args.contains('${prefix}dogecoin');
+  final hasPivx = args.contains('${prefix}pivx');
   final hasBase = args.contains('${prefix}base');
   final hasArbitrum = args.contains('${prefix}arbitrum');
   final excludeFlutterSecureStorage = args.contains('${prefix}excludeFlutterSecureStorage');
@@ -51,6 +53,7 @@ Future<void> main(List<String> args) async {
   // await generateBanano(hasEthereum);
   await generateDecred(hasDecred);
   await generateDogecoin(hasDogecoin);
+  await generatePivx(hasPivx);
   await generateBase(hasBase);
   await generateArbitrum(hasArbitrum);
 
@@ -69,6 +72,7 @@ Future<void> main(List<String> args) async {
     hasZano: hasZano,
     hasDecred: hasDecred,
     hasDogecoin: hasDogecoin,
+    hasPivx: hasPivx,
     hasBase: hasBase,
     hasArbitrum: hasArbitrum,
   );
@@ -86,6 +90,7 @@ Future<void> main(List<String> args) async {
     hasZano: hasZano,
     hasDecred: hasDecred,
     hasDogecoin: hasDogecoin,
+    hasPivx: hasPivx,
     hasBase: hasBase,
     hasArbitrum: hasArbitrum,
   );
@@ -1520,6 +1525,58 @@ abstract class DogeCoin {
   await outputFile.writeAsString(output);
 }
 
+Future<void> generatePivx(bool hasImplementation) async {
+  final outputFile = File(pivxOutputPath);
+  const pivxCommonHeaders = """
+import 'package:cw_core/transaction_priority.dart';
+import 'package:cw_core/unspent_coins_info.dart';
+import 'package:cw_core/wallet_credentials.dart';
+import 'package:cw_core/wallet_info.dart';
+import 'package:cw_core/wallet_service.dart';
+import 'package:hive/hive.dart';
+""";
+  const pivxCWHeaders = """
+import 'package:cw_pivx/cw_pivx.dart';
+""";
+  const pivxCwPart = "part 'cw_pivx.dart';";
+  const pivxContent = """
+abstract class Pivx {
+
+  WalletService createPivxWalletService(Box<UnspentCoinsInfo> unspentCoinSource, bool isDirect);
+
+  WalletCredentials createPivxNewWalletCredentials(
+      {required String name, WalletInfo? walletInfo, String? password, String? passphrase, String? mnemonic});
+
+  WalletCredentials createPivxRestoreWalletFromSeedCredentials(
+      {required String name, required String mnemonic, required String password, String? passphrase});
+
+  TransactionPriority deserializePivxTransactionPriority(int raw);
+
+  TransactionPriority getDefaultTransactionPriority();
+
+  List<TransactionPriority> getTransactionPriorities();
+
+  TransactionPriority getPivxTransactionPrioritySlow();
+}
+""";
+
+  const pivxEmptyDefinition = 'Pivx? pivx;\n';
+  const pivxCWDefinition = 'Pivx? pivx = CWPivx();\n';
+
+  final output = '$pivxCommonHeaders\n' +
+      (hasImplementation ? '$pivxCWHeaders\n' : '\n') +
+      (hasImplementation ? '$pivxCwPart\n\n' : '\n') +
+      (hasImplementation ? pivxCWDefinition : pivxEmptyDefinition) +
+      '\n' +
+      pivxContent;
+
+  if (outputFile.existsSync()) {
+    await outputFile.delete();
+  }
+
+  await outputFile.writeAsString(output);
+}
+
 Future<void> generateBase(bool hasImplementation) async {
   final outputFile = File(baseOutputPath);
   const baseCommonHeaders = """
@@ -1790,6 +1847,7 @@ Future<void> generatePubspec({
   required bool hasZano,
   required bool hasDecred,
   required bool hasDogecoin,
+  required bool hasPivx,
   required bool hasBase,
   required bool hasArbitrum,
 }) async {
@@ -1859,6 +1917,10 @@ Future<void> generatePubspec({
   const cwDogecoin = """
   cw_dogecoin:
       path: ./cw_dogecoin
+  """;
+  const cwPivx = """
+  cw_pivx:
+      path: ./cw_pivx
   """;
   const cwBase = """
   cw_base:
@@ -1937,6 +1999,10 @@ Future<void> generatePubspec({
     output += '\n$cwDogecoin';
   }
 
+  if (hasPivx) {
+    output += '\n$cwPivx';
+  }
+
   if (hasBase) {
     output += '\n$cwBase';
   }
@@ -1971,6 +2037,7 @@ Future<void> generateWalletTypes({
   required bool hasZano,
   required bool hasDecred,
   required bool hasDogecoin,
+  required bool hasPivx,
   required bool hasBase,
   required bool hasArbitrum,
 }) async {
@@ -2002,6 +2069,10 @@ Future<void> generateWalletTypes({
 
   if (hasDogecoin) {
     outputContent += '\tWalletType.dogecoin,\n';
+  }
+
+  if (hasPivx) {
+    outputContent += '\tWalletType.pivx,\n';
   }
 
   if (hasBase) {

@@ -5,6 +5,7 @@ import 'package:cake_wallet/bitcoin_cash/bitcoin_cash.dart';
 import 'package:cake_wallet/dogecoin/dogecoin.dart';
 import 'package:cake_wallet/ethereum/ethereum.dart';
 import 'package:cake_wallet/monero/monero.dart';
+import 'package:cake_wallet/pivx/pivx.dart';
 import 'package:cake_wallet/polygon/polygon.dart';
 import 'package:cake_wallet/wownero/wownero.dart';
 import 'package:cake_wallet/zano/zano.dart';
@@ -28,6 +29,8 @@ List<TransactionPriority> priorityForWalletType(WalletType type) {
       return bitcoinCash!.getTransactionPriorities();
     case WalletType.dogecoin:
       return dogecoin!.getTransactionPriorities();
+    case WalletType.pivx:
+      return pivx!.getTransactionPriorities();
     case WalletType.polygon:
       return polygon!.getTransactionPriorities();
     case WalletType.base:

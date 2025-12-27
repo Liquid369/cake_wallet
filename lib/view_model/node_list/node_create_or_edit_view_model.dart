@@ -95,6 +95,7 @@ abstract class NodeCreateOrEditViewModelBase with Store {
       case WalletType.bitcoinCash:
       case WalletType.bitcoin:
       case WalletType.dogecoin:
+      case WalletType.pivx:
       case WalletType.zano:
       case WalletType.decred:
         return false;
