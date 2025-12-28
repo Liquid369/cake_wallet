@@ -234,13 +234,13 @@ abstract class WalletAddressListViewModelBase extends WalletChangeListenerViewMo
           final shieldedAddresses = pivx?.getShieldedAddresses(wallet) ?? [];
           for (var i = 0; i < shieldedAddresses.length; i++) {
             final addr = shieldedAddresses[i];
-            final divIndex = addr['diversifierIndex'] as int;
+            final divIndex = addr['diversifierIndex'] as String;
             final label = addr['label'] as String?;
             addressList.add(WalletAddressListItem(
-              id: divIndex,
+              id: int.parse(divIndex),
               isPrimary: false,
               // Use label if set, otherwise localized "Receive Address #N"
-              name: label ?? S.current.receive_address_n(divIndex.toString()),
+              name: label ?? S.current.receive_address_n.replaceAll('#{0}', divIndex.toString()),
               address: addr['address'] as String,
               // No per-address balance - shielded pool is unified
               balance: null,

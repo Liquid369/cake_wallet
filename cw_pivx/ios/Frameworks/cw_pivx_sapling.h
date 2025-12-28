@@ -18,6 +18,17 @@
 #define SAPLING_TREE_DEPTH 32
 
 /**
+ * PIVX max supply: 21,000,000 coins = 21,000,000,000,000 zatoshis (21 trillion zatoshis).
+ */
+#define PIVX_MAX_SUPPLY 21000000000000ull
+
+/**
+ * Dust threshold: 0.001 PIV = 1,000,000 zatoshis (1 million).
+ * Outputs below this are economically unspendable due to fee costs.
+ */
+#define DUST_THRESHOLD 1000000ull
+
+/**
  * PIVX Sapling activation height.
  */
 #define PIVX_SAPLING_ACTIVATION 2700500
@@ -104,6 +115,7 @@ void cw_pivx_dispose_sync_engine(int64_t handle);
 
 /**
  * Estimate transaction fee.
+ * Returns the estimated fee in zatoshis, or u64::MAX if overflow would occur.
  */
 uint64_t cw_pivx_estimate_fee(uintptr_t spends,
                               uintptr_t outputs,

@@ -29,24 +29,14 @@ abstract class Pivx {
 
   TransactionPriority getPivxTransactionPrioritySlow();
 
-  /// Get the shielded (Sapling) address for the wallet.
-  /// Returns null if Sapling is not enabled or not yet initialized.
-  String? getShieldedAddress(Object wallet);
-
-  /// Check if Sapling shielded transactions are enabled for this wallet.
-  bool isSaplingEnabled(Object wallet);
-
-  /// Get the shielded balance in zatoshis.
-  int getShieldedBalance(Object wallet);
-
-  /// Generate a new shielded address.
-  /// Returns the new address string.
+  // Sapling/shielded address methods
   Future<String> generateNewShieldedAddress(Object wallet, {String? label});
 
-  /// Get all stored shielded addresses as a list of maps.
-  /// Each map contains: 'address', 'label', 'diversifierIndex', 'isDefault'.
-  List<Map<String, dynamic>> getShieldedAddresses(Object wallet);
+  Future<void> updateShieldedAddressLabel(Object wallet, {required String address, required String label});
 
-  /// Update the label for a shielded address.
-  Future<void> updateShieldedAddressLabel(Object wallet, String address, String? label);
+  bool isSaplingEnabled(Object wallet);
+
+  String getShieldedAddress(Object wallet);
+
+  List<Map<String, dynamic>> getShieldedAddresses(Object wallet);
 }

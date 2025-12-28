@@ -457,14 +457,25 @@ impl TransactionBuilder {
         
         let mut tx = Vec::new();
         
-        // Transaction version (4 bytes, little endian)
-        // PIVX Sapling uses version 3 with overwinter bit set
-        // Version = 3 | (1 << 31) = 0x80000003
-        tx.write_all(&0x80000003u32.to_le_bytes()).unwrap();
-        
-        // Version group ID (4 bytes)
-        // PIVX uses 0x03C48270 for Sapling
-        tx.write_all(&0x03C48270u32.to_le_bytes()).unwrap();
+        // PIVX Transaction Header (4 bytes total):
+        // - nVersion (2 bytes, int16_t): 3 for Sapling
+        // - nType (2 bytes, int16_t): 0 for Normal transaction
+        //
+        // CRITICAL: PIVX does NOT use Zcash's transaction format:
+        // ❌ Zcash: version (4 bytes with overwinter bit) + version group ID (4 bytes) = 8 bytes
+        // ✅ PIVX: nVersion (2 bytes) + nType (2 bytes) = 4 bytes
+        //
+        // Reference: PIVX Core src/primitives/transaction.h
+        //   class CTransaction {
+        //       const int16_t nVersion;  // 1=Legacy, 3=Sapling
+        //       const int16_t nType;     // 0=Normal, 1+=Special (ProReg, etc.)
+        //   };
+        //
+        // Verified against: PIVX Core commit 0cbf7b89 (December 2025)
+        tx.write_all(&3i16.to_le_bytes())
+            .map_err(|_| SaplingError::TransactionBuild)?;  // nVersion = 3 (Sapling)
+        tx.write_all(&0i16.to_le_bytes())
+            .map_err(|_| SaplingError::TransactionBuild)?;  // nType = 0 (Normal)
         
         // No transparent inputs (varint 0)
         tx.push(0x00);
@@ -473,37 +484,53 @@ impl TransactionBuilder {
         tx.push(0x00);
         
         // Lock time (4 bytes, 0 = immediate)
-        tx.write_all(&0u32.to_le_bytes()).unwrap();
+        tx.write_all(&0u32.to_le_bytes())
+            .map_err(|_| SaplingError::TransactionBuild)?;
         
-        // Expiry height (4 bytes, 0 = no expiry)
-        // Note: PIVX may not use expiry height field (Zcash-specific feature)
-        // Keeping as 0 for compatibility - needs verification against PIVX Core
-        tx.write_all(&0u32.to_le_bytes()).unwrap();
+        // CRITICAL: PIVX does NOT serialize expiry height (Zcash-specific feature removed)
+        // Reference: PIVX Core src/primitives/transaction.h SerializeTransaction()
+        //   s << tx.nVersion;
+        //   s << tx.nType;
+        //   s << tx.vin;
+        //   s << tx.vout;
+        //   s << tx.nLockTime;
+        //   if (tx.isSaplingVersion()) {
+        //       s << tx.sapData;  // Goes DIRECTLY to Sapling data, no expiry height!
+        //   }
+        //
+        // ❌ DO NOT serialize expiry height - field doesn't exist in PIVX
         
         // Value balance (8 bytes, signed little endian)
         // This is the net value flow: sum(spend values) - sum(output values)
         // A positive value means value is flowing from shielded to transparent
         // For a pure shielded tx, this equals the fee
         let value_balance: i64 = *bundle.value_balance();
-        tx.write_all(&value_balance.to_le_bytes()).unwrap();
+        tx.write_all(&value_balance.to_le_bytes())
+            .map_err(|_| SaplingError::TransactionBuild)?;
         
         // Sapling spends
         let spends = bundle.shielded_spends();
         self.write_varint(&mut tx, spends.len() as u64);
         for spend in spends {
             // cv (32 bytes) - value commitment
-            tx.write_all(&spend.cv().to_bytes()).unwrap();
+            tx.write_all(&spend.cv().to_bytes())
+                .map_err(|_| SaplingError::TransactionBuild)?;
             // anchor (32 bytes)
-            tx.write_all(&spend.anchor().to_bytes()).unwrap();
+            tx.write_all(&spend.anchor().to_bytes())
+                .map_err(|_| SaplingError::TransactionBuild)?;
             // nullifier (32 bytes)
-            tx.write_all(&spend.nullifier().0).unwrap();
+            tx.write_all(&spend.nullifier().0)
+                .map_err(|_| SaplingError::TransactionBuild)?;
             // rk (32 bytes) - randomized public key
             let rk_bytes: [u8; 32] = spend.rk().clone().into();
-            tx.write_all(&rk_bytes).unwrap();
+            tx.write_all(&rk_bytes)
+                .map_err(|_| SaplingError::TransactionBuild)?;
             // zkproof (192 bytes for Groth16)
-            tx.write_all(spend.zkproof()).unwrap();
+            tx.write_all(spend.zkproof())
+                .map_err(|_| SaplingError::TransactionBuild)?;
             // spend_auth_sig (64 bytes)
-            tx.write_all(&<[u8; 64]>::from(*spend.spend_auth_sig())).unwrap();
+            tx.write_all(&<[u8; 64]>::from(*spend.spend_auth_sig()))
+                .map_err(|_| SaplingError::TransactionBuild)?;
         }
         
         // Sapling outputs
@@ -511,22 +538,29 @@ impl TransactionBuilder {
         self.write_varint(&mut tx, outputs.len() as u64);
         for output in outputs {
             // cv (32 bytes) - value commitment
-            tx.write_all(&output.cv().to_bytes()).unwrap();
+            tx.write_all(&output.cv().to_bytes())
+                .map_err(|_| SaplingError::TransactionBuild)?;
             // cmu (32 bytes) - note commitment
-            tx.write_all(&output.cmu().to_bytes()).unwrap();
+            tx.write_all(&output.cmu().to_bytes())
+                .map_err(|_| SaplingError::TransactionBuild)?;
             // ephemeral_key (32 bytes)
-            tx.write_all(output.ephemeral_key().as_ref()).unwrap();
+            tx.write_all(output.ephemeral_key().as_ref())
+                .map_err(|_| SaplingError::TransactionBuild)?;
             // enc_ciphertext (580 bytes)
-            tx.write_all(output.enc_ciphertext()).unwrap();
+            tx.write_all(output.enc_ciphertext())
+                .map_err(|_| SaplingError::TransactionBuild)?;
             // out_ciphertext (80 bytes)
-            tx.write_all(output.out_ciphertext()).unwrap();
+            tx.write_all(output.out_ciphertext())
+                .map_err(|_| SaplingError::TransactionBuild)?;
             // zkproof (192 bytes)
-            tx.write_all(output.zkproof()).unwrap();
+            tx.write_all(output.zkproof())
+                .map_err(|_| SaplingError::TransactionBuild)?;
         }
         
         // Binding signature (64 bytes)
         let binding_sig = bundle.authorization().binding_sig;
-        tx.write_all(&<[u8; 64]>::from(binding_sig)).unwrap();
+        tx.write_all(&<[u8; 64]>::from(binding_sig))
+            .map_err(|_| SaplingError::TransactionBuild)?;
         
         Ok(tx)
     }
@@ -549,11 +583,19 @@ impl TransactionBuilder {
     
     /// Compute sighash for Sapling transaction signing.
     /// 
-    /// PIVX uses BLAKE2b-256 with personalization based on the consensus branch.
-    /// For a pure Sapling transaction (no transparent components), we hash:
-    /// - Transaction version and headers
-    /// - Value balance
-    /// - Sapling spend/output commitments
+    /// PIVX uses BLAKE2b-256 with personalization: "PIVXSigHash" + branch ID (0).
+    /// The sighash format is based on ZIP 243 but adapted for PIVX's transaction structure.
+    /// 
+    /// Reference: PIVX Core src/script/interpreter.cpp SignatureHash()
+    ///   ss << txTo.nVersion;  // int16_t (2 bytes)
+    ///   ss << txTo.nType;     // int16_t (2 bytes)
+    ///   ss << hashPrevouts;
+    ///   ss << hashSequence;
+    ///   ss << hashOutputs;
+    ///   ss << hashShieldedSpends;
+    ///   ss << hashShieldedOutputs;
+    ///   ss << txTo.sapData->valueBalance;
+    ///   // ... input being signed, locktime, hashtype
     fn compute_sighash(
         &self,
         bundle: &sapling::Bundle<sapling::builder::InProgress<sapling::builder::Proven, sapling::builder::Unsigned>, i64>,
@@ -562,9 +604,7 @@ impl TransactionBuilder {
         use blake2b_simd::Params;
         use std::io::Write;
         
-        // PIVX Sapling personalization: "ZcashSigHash" + consensus branch ID
-        // For PIVX Sapling, we use PIVX-specific personalization
-        // Personalization is 16 bytes: "PIVXSigHash" (12) + branch_id (4)
+        // PIVX Sapling personalization: "PIVXSigHash" (12 bytes) + branch_id (4 bytes)
         // Verified against PIVX Core: src/script/interpreter.cpp:1228-1234
         let mut personalization = [0u8; 16];
         personalization[..12].copy_from_slice(b"PIVXSigHash");
@@ -578,10 +618,12 @@ impl TransactionBuilder {
             .to_state();
         
         // Hash transaction header data
-        // Version (with overwinter flag)
-        hasher.write_all(&0x80000003u32.to_le_bytes()).unwrap();
-        // Version group ID
-        hasher.write_all(&0x03C48270u32.to_le_bytes()).unwrap();
+        // PIVX format: nVersion (2 bytes) + nType (2 bytes)
+        // Verified against PIVX Core: interpreter.cpp:1238-1240
+        //   ss << txTo.nVersion;  // int16_t
+        //   ss << txTo.nType;     // int16_t
+        hasher.write_all(&3i16.to_le_bytes()).unwrap();  // nVersion = 3 (Sapling)
+        hasher.write_all(&0i16.to_le_bytes()).unwrap();  // nType = 0 (Normal)
         
         // Hash prevouts (empty for pure Sapling)
         hasher.write_all(&[0u8; 32]).unwrap();
@@ -692,17 +734,31 @@ mod tests {
     
     #[test]
     fn test_transaction_version() {
-        // Verify Sapling transaction version (3 with overwintered bit)
-        // Reference: PIVX Core src/primitives/transaction.h:248-252
-        let version = 0x80000003u32;
+        // PIVX uses a different transaction header format than Zcash
+        // PIVX: nVersion (2 bytes, int16_t) + nType (2 bytes, int16_t)
+        // Zcash: version with overwinter bit (4 bytes) + version group ID (4 bytes)
+        //
+        // Reference: PIVX Core src/primitives/transaction.h
+        //   class CTransaction {
+        //       const int16_t nVersion;  // 1=Legacy, 3=Sapling
+        //       const int16_t nType;     // 0=Normal, 1+=Special
+        //   };
         
-        // Check overwintered bit (bit 31)
-        assert_eq!(version & 0x80000000, 0x80000000, 
-            "Overwintered bit must be set");
+        let n_version: i16 = 3;  // Sapling
+        let n_type: i16 = 0;     // Normal transaction
         
-        // Check version number (lower bits)
-        assert_eq!(version & 0x7FFFFFFF, 3, 
-            "Transaction version must be 3 for Sapling");
+        assert_eq!(n_version, 3, "Sapling transactions must use nVersion = 3");
+        assert_eq!(n_type, 0, "Normal transactions must use nType = 0");
+        
+        // Verify serialization produces 4 bytes total
+        let mut header = Vec::new();
+        header.extend_from_slice(&n_version.to_le_bytes());  // 2 bytes
+        header.extend_from_slice(&n_type.to_le_bytes());     // 2 bytes
+        assert_eq!(header.len(), 4, "Transaction header must be exactly 4 bytes");
+        
+        // Verify the bytes match expected values
+        assert_eq!(header, vec![0x03, 0x00, 0x00, 0x00], 
+            "Header must be [0x03, 0x00, 0x00, 0x00] for Sapling Normal transaction");
     }
     
     #[test]

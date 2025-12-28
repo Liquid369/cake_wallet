@@ -216,7 +216,7 @@ class ShieldSyncEngineWrapper {
   /// Used when rescanning to clear the in-memory state.
   void resetNativeEngine() {
     _engine.nativeEngine.reset();
-    _treePosition = 0;
+    _treePosition.initialize(0);
     printV('[PIVX Sapling] Reset native sync engine');
   }
   

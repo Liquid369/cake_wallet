@@ -154,7 +154,7 @@ pub fn parse_merkle_path(
         if bool::from(node_opt.is_none()) {
             return Err(SaplingError::InvalidWitness);
         }
-        path_elems.push(node_opt.unwrap());
+        path_elems.push(node_opt.unwrap());  // Safe: just checked is_none()
     }
     
     // Create the MerklePath
@@ -205,7 +205,7 @@ pub fn note_from_parts(
     if bool::from(fr_opt.is_none()) {
         return Err(SaplingError::InvalidInput("invalid rseed scalar".into()));
     }
-    let rseed = Rseed::BeforeZip212(fr_opt.unwrap());
+    let rseed = Rseed::BeforeZip212(fr_opt.unwrap());  // Safe: just checked is_none()
     
     // Create the note
     let note = Note::from_parts(

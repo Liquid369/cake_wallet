@@ -131,7 +131,7 @@ abstract class WalletAddressEditOrCreateViewModelBase with Store {
       // Check if this is a shielded address (starts with 'ps1')
       final address = item.address;
       if (address.startsWith('ps1')) {
-        await pivx!.updateShieldedAddressLabel(wallet, address, label.isNotEmpty ? label : null);
+        await pivx!.updateShieldedAddressLabel(wallet, address: address, label: label.isNotEmpty ? label : '');
         await wallet.save();
         return;
       }

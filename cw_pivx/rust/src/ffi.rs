@@ -139,7 +139,13 @@ macro_rules! get_from_handle {
 pub extern "C" fn cw_pivx_get_last_error() -> *mut c_char {
     let mut error = lock_or_fail!(LAST_ERROR, ptr::null_mut());
     match error.take() {
-        Some(msg) => CString::new(msg).unwrap().into_raw(),
+        Some(msg) => {
+            // Replace null bytes with spaces if any (should never happen in error messages)
+            let sanitized = msg.replace('\0', " ");
+            CString::new(sanitized)
+                .expect("Error message sanitized: no null bytes")
+                .into_raw()
+        }
         None => ptr::null_mut(),
     }
 }
@@ -158,10 +164,65 @@ unsafe fn bytes_from_ffi_ptr<const N: usize>(
         .map_err(|_| format!("{} size mismatch (expected {} bytes)", param_name, N))
 }
 
+/// Validate amount is within reasonable bounds.
+/// PIVX uses 8 decimal places. Max reasonable: 100 billion PIV = 10^19 zatoshis.
+/// This prevents overflow and unreasonable amounts.
+fn validate_amount(amount: u64, param_name: &str) -> Result<(), String> {
+    const MAX_REASONABLE: u64 = 10_000_000_000_000_000_000; // 100 billion PIV
+    const DUST_THRESHOLD: u64 = 10_000; // 0.0001 PIV
+    
+    if amount == 0 {
+        return Err(format!("{} cannot be zero", param_name));
+    }
+    if amount < DUST_THRESHOLD {
+        return Err(format!("{} is below dust threshold ({} zatoshis)", param_name, DUST_THRESHOLD));
+    }
+    if amount > MAX_REASONABLE {
+        return Err(format!("{} exceeds maximum reasonable amount", param_name));
+    }
+    Ok(())
+}
+
+/// Validate fee is reasonable.
+/// Fee should be at least 1000 zatoshis (0.00001 PIV) and at most 1 PIV.
+fn validate_fee(fee: u64) -> Result<(), String> {
+    const MIN_FEE: u64 = 1_000; // 0.00001 PIV
+    const MAX_FEE: u64 = 100_000_000; // 1 PIV
+    
+    if fee < MIN_FEE {
+        return Err(format!("Fee too low (min {} zatoshis)", MIN_FEE));
+    }
+    if fee > MAX_FEE {
+        return Err(format!("Fee too high (max {} zatoshis)", MAX_FEE));
+    }
+    Ok(())
+}
+
+/// Validate string length is within reasonable bounds.
+/// This prevents DoS attacks via extremely long strings.
+fn validate_string_length(s: &str, max_len: usize, param_name: &str) -> Result<(), String> {
+    if s.len() > max_len {
+        return Err(format!("{} too long (max {} chars, got {})", param_name, max_len, s.len()));
+    }
+    Ok(())
+}
+
+/// Validate memo length (max 512 bytes for Sapling).
+fn validate_memo(memo: Option<&str>) -> Result<(), String> {
+    if let Some(m) = memo {
+        if m.len() > 512 {
+            return Err(format!("Memo too long (max 512 bytes, got {})", m.len()));
+        }
+    }
+    Ok(())
+}
+
 /// Get the library version.
 #[no_mangle]
 pub extern "C" fn cw_pivx_version() -> *mut c_char {
-    CString::new(env!("CARGO_PKG_VERSION")).unwrap().into_raw()
+    CString::new(env!("CARGO_PKG_VERSION"))
+        .expect("Version string is valid: no null bytes")
+        .into_raw()
 }
 
 /// Free a string allocated by this library.
@@ -269,7 +330,9 @@ pub extern "C" fn cw_pivx_get_default_address(handle: i64) -> *mut c_char {
     match manager.default_address() {
         Ok(addr) => {
             let encoded = manager.encode_payment_address(&addr);
-            CString::new(encoded).unwrap().into_raw()
+            CString::new(encoded)
+                .expect("Address encoding is valid: no null bytes")
+                .into_raw()
         }
         Err(e) => {
             set_error(&format!("Failed to get address: {:?}", e));
@@ -305,7 +368,9 @@ pub extern "C" fn cw_pivx_derive_address(handle: i64, index: u64) -> *mut c_char
     match manager.derive_address(div_index) {
         Ok(addr) => {
             let encoded = manager.encode_payment_address(&addr);
-            CString::new(encoded).unwrap().into_raw()
+            CString::new(encoded)
+                .expect("Address encoding is valid: no null bytes")
+                .into_raw()
         }
         Err(e) => {
             set_error(&format!("Failed to derive address: {:?}", e));
@@ -334,7 +399,9 @@ pub extern "C" fn cw_pivx_get_viewing_key(handle: i64) -> *mut c_char {
     };
     
     let encoded = manager.encode_full_viewing_key();
-    CString::new(encoded).unwrap().into_raw()
+    CString::new(encoded)
+        .expect("FVK encoding is valid: no null bytes")
+        .into_raw()
 }
 
 /// Validate a Sapling address.
@@ -805,7 +872,9 @@ pub extern "C" fn cw_pivx_get_spendable_notes(sync_handle: i64) -> *mut c_char {
     }).collect();
     
     let json_str = serde_json::to_string(&notes_json).unwrap_or_else(|_| "[]".to_string());
-    CString::new(json_str).unwrap().into_raw()
+    CString::new(json_str)
+        .expect("JSON string is valid: no null bytes")
+        .into_raw()
 }
 
 /// Restore a note from JSON data.
@@ -862,7 +931,8 @@ pub extern "C" fn cw_pivx_restore_note(
     
     // Parse rseed (32 bytes Fr scalar for BeforeZip212)
     let rseed_bytes: [u8; 32] = match hex::decode(rseed_hex) {
-        Ok(bytes) if bytes.len() == 32 => bytes.try_into().unwrap(),
+        Ok(bytes) if bytes.len() == 32 => bytes.try_into()
+            .expect("Length checked: rseed is exactly 32 bytes"),
         _ => {
             set_error("Invalid rseed");
             return 0;
@@ -871,7 +941,8 @@ pub extern "C" fn cw_pivx_restore_note(
     
     // Parse address (43 bytes - 11 byte diversifier + 32 byte pk_d)
     let address_bytes: [u8; 43] = match hex::decode(address_hex) {
-        Ok(bytes) if bytes.len() == 43 => bytes.try_into().unwrap(),
+        Ok(bytes) if bytes.len() == 43 => bytes.try_into()
+            .expect("Length checked: address is exactly 43 bytes"),
         _ => {
             set_error(&format!("Invalid address: expected 43 bytes, got {} from '{}'", 
                 hex::decode(address_hex).map(|b| b.len()).unwrap_or(0), address_hex));
@@ -881,7 +952,8 @@ pub extern "C" fn cw_pivx_restore_note(
     
     // Parse nullifier (32 bytes)
     let nullifier_bytes: [u8; 32] = match hex::decode(nullifier_hex) {
-        Ok(bytes) if bytes.len() == 32 => bytes.try_into().unwrap(),
+        Ok(bytes) if bytes.len() == 32 => bytes.try_into()
+            .expect("Length checked: nullifier is exactly 32 bytes"),
         _ => {
             set_error("Invalid nullifier");
             return 0;
@@ -1065,6 +1137,16 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
         return empty_result;
     }
     
+    // Validate amount and fee ranges
+    if let Err(e) = validate_amount(amount, "amount") {
+        set_error(&e);
+        return empty_result;
+    }
+    if let Err(e) = validate_fee(fee) {
+        set_error(&e);
+        return empty_result;
+    }
+    
     // Check prover is initialized
     if !crate::prover::is_prover_initialized() {
         set_error("Prover not initialized. Call cw_pivx_init_prover first.");
@@ -1092,6 +1174,16 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
         }
     };
     
+    let anchor_str = unsafe {
+        match CStr::from_ptr(anchor_hex).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                set_error("Invalid anchor encoding");
+                return empty_result;
+            }
+        }
+    };
+    
     let memo_str = if memo.is_null() {
         None
     } else {
@@ -1103,15 +1195,25 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
         }
     };
     
-    let anchor_str = unsafe {
-        match CStr::from_ptr(anchor_hex).to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                set_error("Invalid anchor encoding");
-                return empty_result;
-            }
-        }
-    };
+    // Validate memo length
+    if let Err(e) = validate_memo(memo_str.as_deref()) {
+        set_error(&e);
+        return empty_result;
+    }
+    
+    // Validate string lengths to prevent DoS
+    if let Err(e) = validate_string_length(notes_str, 1_000_000, "notes_json") {
+        set_error(&e);
+        return empty_result;
+    }
+    if let Err(e) = validate_string_length(to_str, 1000, "to_address") {
+        set_error(&e);
+        return empty_result;
+    }
+    if let Err(e) = validate_string_length(anchor_str, 100, "anchor_hex") {
+        set_error(&e);
+        return empty_result;
+    }
     
     // Get key manager
     let managers = lock_or_fail!(KEY_MANAGERS, empty_result);
@@ -1158,7 +1260,8 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
     
     // Parse anchor
     let anchor_bytes: [u8; 32] = match hex::decode(anchor_str) {
-        Ok(bytes) if bytes.len() == 32 => bytes.try_into().unwrap(),
+        Ok(bytes) if bytes.len() == 32 => bytes.try_into()
+            .expect("Length checked: anchor is exactly 32 bytes"),
         _ => {
             set_error("Invalid anchor: must be 32-byte hex");
             return empty_result;
@@ -1195,7 +1298,8 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
         
         // Parse the nullifier
         let nullifier_bytes: [u8; 32] = match hex::decode(&note_data.nullifier) {
-            Ok(bytes) if bytes.len() == 32 => bytes.try_into().unwrap(),
+            Ok(bytes) if bytes.len() == 32 => bytes.try_into()
+                .expect("Length checked: nullifier is exactly 32 bytes"),
             _ => {
                 set_error(&format!("Invalid nullifier for note {}", idx));
                 return empty_result;
@@ -1391,7 +1495,8 @@ mod tests {
     #[test]
     fn test_ffi_validate_address() {
         let valid = "ps1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqf0vjel";
-        let valid_ptr = CString::new(valid).unwrap();
+        let valid_ptr = CString::new(valid)
+            .expect("Test string is valid: no null bytes");
         
         // This will fail validation because it's a dummy address, but the FFI call should work
         let _result = cw_pivx_validate_address(valid_ptr.as_ptr(), 0);

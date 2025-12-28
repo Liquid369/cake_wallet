@@ -208,7 +208,7 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     
     // Temporary variables for transactional initialization
     SaplingKeyManagerWrapper? tempKeyManager;
-    SaplingAddress? tempAddress;
+    SaplingAddressResult? tempAddress;
     Uint8List? saplingSeeds;
     
     try {
@@ -239,7 +239,7 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
       // Clean up partial state on error
       if (tempKeyManager != null) {
         try {
-          await tempKeyManager.dispose();
+          tempKeyManager.dispose();
         } catch (_) {
           // Ignore disposal errors during error handling
         }
@@ -375,19 +375,15 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
           printV('[PIVX] Balance reconciliation: Dart($shieldedBalance) -> Rust($rustBalance)');
           printV('[PIVX] Pending reconciliation: Dart($pendingShieldedBalance) -> Rust($rustPending)');
           
-          // Update Dart state to match Rust
+          // Update Dart state to match Rust (source of truth)
           shieldedBalance = rustBalance;
           pendingShieldedBalance = rustPending;
           
-          // Persist to storage
-          final storage = SaplingNoteStorage(
-            walletId: walletInfo.id,
-            isTestnet: network == PivxNetwork.testnet,
-          );
-          await storage.load();
-          await storage.updateBalance(rustBalance);
+          // Note: Balance is computed from notes in storage, not stored separately.
+          // The Rust sync engine maintains the authoritative note set.
+          // No need to explicitly save balance - it will be recomputed from notes.
           
-          // Trigger UI update
+          // Trigger UI update to reflect reconciled balance
           await updateBalance();
         }
       } catch (e) {
@@ -629,25 +625,32 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
   }) async {
     await initializeSapling();
     
-    if (_saplingTxBuilder == null) {
-      _saplingTxBuilder = await SaplingTransactionBuilderFactory.create(
-        keyManager: _saplingKeyManager!,
-        syncEngine: _shieldSyncEngine!,
-        isTestnet: network == PivxNetwork.testnet,
+    // CRITICAL: Transaction creation must be protected by _balanceLock to prevent race conditions.
+    // If two transactions are created simultaneously, they could:
+    // 1. Select the same notes as inputs (double-spend)
+    // 2. Read inconsistent balance state
+    // 3. Create invalid transactions that will be rejected by the network
+    return await _balanceLock.synchronized(() async {
+      if (_saplingTxBuilder == null) {
+        _saplingTxBuilder = await SaplingTransactionBuilderFactory.create(
+          keyManager: _saplingKeyManager!,
+          syncEngine: _shieldSyncEngine!,
+          isTestnet: network == PivxNetwork.testnet,
+        );
+      }
+      
+      // Ensure proving params are loaded before building transaction
+      await _ensureProvingParamsLoaded();
+      
+      final options = SaplingTransactionOptions(
+        toAddress: toAddress,
+        amount: amount,
+        memo: memo,
+        useShieldedInputs: useShieldedInputs,
       );
-    }
-    
-    // Ensure proving params are loaded before building transaction
-    await _ensureProvingParamsLoaded();
-    
-    final options = SaplingTransactionOptions(
-      toAddress: toAddress,
-      amount: amount,
-      memo: memo,
-      useShieldedInputs: useShieldedInputs,
-    );
-    
-    return await _saplingTxBuilder!.buildTransaction(options: options);
+      
+      return await _saplingTxBuilder!.buildTransaction(options: options);
+    });
   }
 
   /// Shield transparent funds.

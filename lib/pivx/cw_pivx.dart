@@ -54,9 +54,9 @@ class CWPivx extends Pivx {
       PivxTransactionPriority.slow;
 
   @override
-  String? getShieldedAddress(Object wallet) {
+  String getShieldedAddress(Object wallet) {
     final pivxWallet = wallet as PivxWallet;
-    return pivxWallet.currentShieldedAddress;
+    return pivxWallet.currentShieldedAddress ?? '';
   }
 
   @override
@@ -89,7 +89,7 @@ class CWPivx extends Pivx {
   }
 
   @override
-  Future<void> updateShieldedAddressLabel(Object wallet, String address, String? label) async {
+  Future<void> updateShieldedAddressLabel(Object wallet, {required String address, required String label}) async {
     final pivxWallet = wallet as PivxWallet;
     await pivxWallet.updateShieldedAddressLabel(address, label);
   }
