@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'dart:io';
+import 'package:cw_core/encryption_file_utils.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:cw_pivx/src/sapling/sapling_note_storage.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -14,24 +16,51 @@ class MockPathProviderPlatform extends Fake
   }
 }
 
+class FakeEncryptionFileUtils extends EncryptionFileUtils {
+  static const _prefix = 'encrypted:';
+
+  @override
+  Future<void> write({
+    required String path,
+    required String password,
+    required String data,
+  }) async {
+    await File(path)
+        .writeAsString('$_prefix${base64Encode(utf8.encode(data))}');
+  }
+
+  @override
+  Future<String> read({
+    required String path,
+    required String password,
+  }) async {
+    final encrypted = await File(path).readAsString();
+    if (!encrypted.startsWith(_prefix)) {
+      throw const FormatException('Missing test encryption prefix');
+    }
+    return utf8.decode(base64Decode(encrypted.substring(_prefix.length)));
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  
+
   setUpAll(() {
     PathProviderPlatform.instance = MockPathProviderPlatform();
   });
 
   group('SaplingNoteStorage Thread Safety', () {
     late SaplingNoteStorage storage;
-    
+
     setUp(() async {
       storage = SaplingNoteStorage(
         walletId: 'test_wallet_${DateTime.now().millisecondsSinceEpoch}',
         isTestnet: true,
+        allowUnencryptedStorage: true,
       );
       await storage.load();
     });
-    
+
     tearDown(() async {
       // Clean up test files - storage will clean up on its own
       // We don't need to manually delete as temp files will be cleared
@@ -51,12 +80,12 @@ void main() {
         );
         return storage.addNote(note);
       });
-      
+
       await Future.wait(futures);
-      
+
       // Verify all notes were saved
       expect(storage.notes.length, equals(100));
-      
+
       // Verify all values are present
       final values = storage.notes.map((n) => n.value).toSet();
       expect(values.length, equals(100));
@@ -65,7 +94,8 @@ void main() {
       }
     });
 
-    test('concurrent markSpentByNullifier operations are thread-safe', () async {
+    test('concurrent markSpentByNullifier operations are thread-safe',
+        () async {
       // Add notes first
       for (int i = 0; i < 50; i++) {
         await storage.addNote(StoredSaplingNote(
@@ -79,17 +109,122 @@ void main() {
           nullifier: 'nf_$i',
         ));
       }
-      
+
       // Mark them all spent concurrently
       final futures = List.generate(50, (i) {
         return storage.markSpentByNullifier('nf_$i', 'spending_tx_$i');
       });
-      
+
       await Future.wait(futures);
-      
+
       // Verify all marked as spent
       final spentCount = storage.notes.where((n) => n.isSpent).length;
       expect(spentCount, equals(50));
+    });
+
+    test('pending spent nullifiers are reserved and excluded from balance',
+        () async {
+      await storage.addNote(StoredSaplingNote(
+        id: 'tx0:0',
+        value: 5000,
+        height: 1000,
+        txid: 'tx0',
+        outputIndex: 0,
+        treePosition: 0,
+        cmu: 'cmu_0',
+        nullifier: 'nf_0',
+      ));
+      await storage.addNote(StoredSaplingNote(
+        id: 'tx1:0',
+        value: 7000,
+        height: 1001,
+        txid: 'tx1',
+        outputIndex: 0,
+        treePosition: 1,
+        cmu: 'cmu_1',
+        nullifier: 'nf_1',
+      ));
+
+      final reserved = await storage.markPendingSpentByNullifiers(
+        ['nf_0'],
+        'pending_txid',
+      );
+
+      expect(reserved, equals(5000));
+      expect(storage.balance, equals(7000));
+      expect(storage.pendingOutgoingBalance, equals(5000));
+      expect(storage.notes.first.isPendingSpend, isTrue);
+
+      await storage.markSpentByNullifier('nf_0', 'mined_txid');
+
+      expect(storage.notes.first.isSpent, isTrue);
+      expect(storage.notes.first.isPendingSpend, isFalse);
+      expect(storage.notes.first.spendingTxid, equals('mined_txid'));
+      expect(storage.notes.first.pendingSpendingTxid, isNull);
+      expect(storage.pendingOutgoingBalance, equals(0));
+    });
+
+    test('shielded balance separates pending, confirmed, and spendable notes',
+        () async {
+      await storage.addNote(StoredSaplingNote(
+        id: 'young_tx:0',
+        value: 5000,
+        height: 100,
+        txid: 'young_tx',
+        outputIndex: 0,
+        treePosition: 0,
+        cmu: 'cmu_young',
+        nullifier: 'nf_young',
+        rseed: 'rseed_young',
+        diversifier: 'diversifier_young',
+        pkD: 'pkd_young',
+      ));
+      await storage.addNote(StoredSaplingNote(
+        id: 'missing_spend_data_tx:0',
+        value: 7000,
+        height: 99,
+        txid: 'missing_spend_data_tx',
+        outputIndex: 0,
+        treePosition: 1,
+        cmu: 'cmu_missing',
+      ));
+
+      expect(
+        storage.pendingReceivedBalanceAt(
+          chainHeight: 104,
+          minConfirmations: 6,
+        ),
+        equals(5000),
+      );
+      expect(
+        storage.spendableBalanceAt(
+          chainHeight: 104,
+          minConfirmations: 6,
+        ),
+        equals(0),
+      );
+      expect(
+        storage.spendableBalanceAt(
+          chainHeight: 105,
+          minConfirmations: 6,
+        ),
+        equals(5000),
+      );
+      expect(
+        storage.confirmedBalanceAt(
+          chainHeight: 105,
+          minConfirmations: 6,
+          requireSpendingData: false,
+        ),
+        equals(12000),
+      );
+      expect(
+        storage.confirmedBalanceAt(
+          chainHeight: 105,
+          minConfirmations: 6,
+        ),
+        equals(5000),
+      );
     });
 
     test('concurrent balance calculations are consistent', () async {
@@ -105,14 +240,14 @@ void main() {
           cmu: 'cmu_$i',
         ));
       }
-      
+
       // Read balance concurrently using thread-safe method
       final futures = List.generate(100, (_) async {
         return await storage.getBalanceSafe();
       });
-      
+
       final balances = await Future.wait(futures);
-      
+
       // All balances should be the same
       expect(balances.toSet().length, equals(1));
       expect(balances.first, equals(20000));
@@ -132,9 +267,9 @@ void main() {
         );
         return storage.addNote(note);
       });
-      
+
       await Future.wait(futures);
-      
+
       // Should only have 1 note (duplicates updated)
       expect(storage.notes.length, equals(1));
       expect(storage.notes.first.id, equals('same_tx:0'));
@@ -143,17 +278,271 @@ void main() {
       expect(storage.notes.first.value, lessThan(1050));
     });
 
-    test('concurrent setLastSyncedHeight operations maintain consistency', () async {
+    test('concurrent setLastSyncedHeight operations maintain consistency',
+        () async {
       // Update height concurrently
       final futures = List.generate(100, (i) {
         return storage.setLastSyncedHeight(2700000 + i);
       });
-      
+
       await Future.wait(futures);
-      
+
       // Last synced height should be one of the values we set
       expect(storage.lastSyncedHeight, greaterThanOrEqualTo(2700000));
       expect(storage.lastSyncedHeight, lessThan(2700100));
+    });
+
+    test('nextTreePosition persists independently from owned notes', () async {
+      final walletId =
+          'tree_position_test_${DateTime.now().millisecondsSinceEpoch}';
+      final storage1 = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        allowUnencryptedStorage: true,
+      );
+      await storage1.load();
+
+      await storage1.setNextTreePosition(42);
+      expect(storage1.nextTreePosition, equals(42));
+
+      final storage2 = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        allowUnencryptedStorage: true,
+      );
+      await storage2.load();
+
+      expect(storage2.notes, isEmpty);
+      expect(storage2.nextTreePosition, equals(42));
+      expect(storage2.hasPersistedTreePosition, isTrue);
+    });
+
+    test('legacy note-derived tree position is not treated as persisted',
+        () async {
+      final walletId =
+          'legacy_tree_position_${DateTime.now().millisecondsSinceEpoch}';
+      final legacyFile = File(
+          '${Directory.systemTemp.path}/pivx_sapling_${walletId}_testnet.json');
+
+      if (await legacyFile.exists()) await legacyFile.delete();
+
+      await legacyFile.writeAsString(jsonEncode({
+        'lastSyncedHeight': 2700510,
+        'nextDiversifierIndex': 1,
+        'notes': [
+          {
+            'id': 'txid:0',
+            'value': 1000,
+            'height': 2700501,
+            'txid': 'txid',
+            'outputIndex': 0,
+            'treePosition': 41,
+            'cmu': 'cmu',
+            'isSpent': false,
+          }
+        ],
+        'addresses': <Map<String, dynamic>>[],
+      }));
+
+      final legacyStorage = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        allowUnencryptedStorage: true,
+      );
+
+      await legacyStorage.load();
+
+      expect(legacyStorage.nextTreePosition, equals(42));
+      expect(legacyStorage.hasPersistedTreePosition, isFalse);
+    });
+
+    test('sync height and tree position persist atomically', () async {
+      final walletId =
+          'complete_range_${DateTime.now().millisecondsSinceEpoch}';
+      final storage1 = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        allowUnencryptedStorage: true,
+      );
+      await storage1.load();
+
+      await storage1.completeSyncRange(
+        lastSyncedHeight: 2700600,
+        nextTreePosition: 99,
+        treePositionIsTrusted: true,
+      );
+
+      final storage2 = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        allowUnencryptedStorage: true,
+      );
+      await storage2.load();
+
+      expect(storage2.lastSyncedHeight, equals(2700600));
+      expect(storage2.nextTreePosition, equals(99));
+      expect(storage2.hasPersistedTreePosition, isTrue);
+    });
+
+    test('untrusted sync completion does not persist tree cursor', () async {
+      final walletId =
+          'untrusted_complete_${DateTime.now().millisecondsSinceEpoch}';
+      final storage1 = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        allowUnencryptedStorage: true,
+      );
+      await storage1.load();
+
+      await storage1.completeSyncRange(
+        lastSyncedHeight: 2700600,
+        nextTreePosition: 99,
+        treePositionIsTrusted: false,
+      );
+
+      final storage2 = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        allowUnencryptedStorage: true,
+      );
+      await storage2.load();
+
+      expect(storage2.lastSyncedHeight, equals(2700600));
+      expect(storage2.nextTreePosition, equals(0));
+      expect(storage2.hasPersistedTreePosition, isFalse);
+    });
+
+    test('clear removes trusted tree cursor', () async {
+      final walletId = 'clear_cursor_${DateTime.now().millisecondsSinceEpoch}';
+      final storage1 = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        allowUnencryptedStorage: true,
+      );
+      await storage1.load();
+
+      await storage1.setNextTreePosition(42);
+      await storage1.clear();
+
+      final storage2 = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        allowUnencryptedStorage: true,
+      );
+      await storage2.load();
+
+      expect(storage2.lastSyncedHeight, equals(0));
+      expect(storage2.nextTreePosition, equals(0));
+      expect(storage2.hasPersistedTreePosition, isFalse);
+    });
+
+    test('unencrypted storage is rejected unless explicitly allowed', () async {
+      final protectedStorage = SaplingNoteStorage(
+        walletId: 'encrypted_required_${DateTime.now().millisecondsSinceEpoch}',
+        isTestnet: true,
+      );
+
+      expect(protectedStorage.load(), throwsA(isA<StateError>()));
+    });
+
+    test('legacy plaintext sidecar migrates to encrypted storage', () async {
+      final walletId =
+          'legacy_migration_${DateTime.now().millisecondsSinceEpoch}';
+      final legacyFile = File(
+          '${Directory.systemTemp.path}/pivx_sapling_${walletId}_testnet.json');
+      final encryptedFile = File(
+          '${Directory.systemTemp.path}/pivx_sapling_${walletId}_testnet.json.enc');
+
+      if (await legacyFile.exists()) await legacyFile.delete();
+      if (await encryptedFile.exists()) await encryptedFile.delete();
+
+      await legacyFile.writeAsString(jsonEncode({
+        'lastSyncedHeight': 2700501,
+        'nextTreePosition': 77,
+        'nextDiversifierIndex': 3,
+        'notes': <Map<String, dynamic>>[],
+        'addresses': <Map<String, dynamic>>[],
+      }));
+
+      final encryptedStorage = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        encryptionFileUtils: FakeEncryptionFileUtils(),
+        password: 'test-password',
+      );
+
+      await encryptedStorage.load();
+
+      expect(encryptedStorage.lastSyncedHeight, equals(2700501));
+      expect(encryptedStorage.nextTreePosition, equals(77));
+      expect(await legacyFile.exists(), isFalse);
+      expect(await encryptedFile.exists(), isTrue);
+      expect(await encryptedFile.readAsString(),
+          isNot(contains('lastSyncedHeight')));
+
+      final reloadedStorage = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        encryptionFileUtils: FakeEncryptionFileUtils(),
+        password: 'test-password',
+      );
+
+      await reloadedStorage.load();
+      expect(reloadedStorage.lastSyncedHeight, equals(2700501));
+      expect(reloadedStorage.nextTreePosition, equals(77));
+      expect(reloadedStorage.hasPersistedTreePosition, isTrue);
+    });
+
+    test('legacy migration does not trust inferred tree cursor', () async {
+      final walletId =
+          'legacy_untrusted_cursor_${DateTime.now().millisecondsSinceEpoch}';
+      final legacyFile = File(
+          '${Directory.systemTemp.path}/pivx_sapling_${walletId}_testnet.json');
+      final encryptedFile = File(
+          '${Directory.systemTemp.path}/pivx_sapling_${walletId}_testnet.json.enc');
+
+      if (await legacyFile.exists()) await legacyFile.delete();
+      if (await encryptedFile.exists()) await encryptedFile.delete();
+
+      await legacyFile.writeAsString(jsonEncode({
+        'lastSyncedHeight': 2700501,
+        'nextDiversifierIndex': 1,
+        'notes': [
+          {
+            'id': 'txid:0',
+            'value': 1000,
+            'height': 2700501,
+            'txid': 'txid',
+            'outputIndex': 0,
+            'treePosition': 12,
+            'cmu': 'cmu',
+            'isSpent': false,
+          }
+        ],
+        'addresses': <Map<String, dynamic>>[],
+      }));
+
+      final encryptedStorage = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        encryptionFileUtils: FakeEncryptionFileUtils(),
+        password: 'test-password',
+      );
+      await encryptedStorage.load();
+
+      expect(encryptedStorage.nextTreePosition, equals(13));
+      expect(encryptedStorage.hasPersistedTreePosition, isFalse);
+
+      final reloadedStorage = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        encryptionFileUtils: FakeEncryptionFileUtils(),
+        password: 'test-password',
+      );
+      await reloadedStorage.load();
+
+      expect(reloadedStorage.nextTreePosition, equals(13));
+      expect(reloadedStorage.hasPersistedTreePosition, isFalse);
     });
 
     test('mixed concurrent operations (add, mark spent, read)', () async {
@@ -170,9 +559,9 @@ void main() {
           nullifier: 'nf_$i',
         ));
       }
-      
+
       final futures = <Future>[];
-      
+
       // Add more notes concurrently
       for (int i = 20; i < 40; i++) {
         futures.add(storage.addNote(StoredSaplingNote(
@@ -186,24 +575,24 @@ void main() {
           nullifier: 'nf_$i',
         )));
       }
-      
+
       // Mark some spent concurrently
       for (int i = 0; i < 10; i++) {
         futures.add(storage.markSpentByNullifier('nf_$i', 'spending_tx'));
       }
-      
+
       // Read balance concurrently
       for (int i = 0; i < 20; i++) {
         futures.add(storage.getBalanceSafe());
       }
-      
+
       await Future.wait(futures);
-      
+
       // Verify final state
       expect(storage.notes.length, equals(40));
       final spentCount = storage.notes.where((n) => n.isSpent).length;
       expect(spentCount, equals(10));
-      
+
       // Balance should be 30 unspent notes * 1000
       final finalBalance = await storage.getBalanceSafe();
       expect(finalBalance, equals(30000));
@@ -213,9 +602,10 @@ void main() {
       final storage1 = SaplingNoteStorage(
         walletId: 'persist_test',
         isTestnet: true,
+        allowUnencryptedStorage: true,
       );
       await storage1.load();
-      
+
       // Add notes concurrently
       final futures = List.generate(50, (i) {
         final note = StoredSaplingNote(
@@ -229,28 +619,29 @@ void main() {
         );
         return storage1.addNote(note);
       });
-      
+
       await Future.wait(futures);
-      
+
       // Load in new instance
       final storage2 = SaplingNoteStorage(
         walletId: 'persist_test',
         isTestnet: true,
+        allowUnencryptedStorage: true,
       );
       await storage2.load();
-      
+
       // Verify all notes persisted
       expect(storage2.notes.length, equals(50));
       final balance = await storage2.getBalanceSafe();
       expect(balance, equals(50000));
-      
+
       // Cleanup happens automatically with temp directory
     });
 
     test('stress test with very high concurrency', () async {
       // 1000 concurrent operations
       final futures = <Future>[];
-      
+
       for (int i = 0; i < 1000; i++) {
         if (i % 2 == 0) {
           // Add note
@@ -269,12 +660,12 @@ void main() {
           futures.add(storage.getBalanceSafe());
         }
       }
-      
+
       await Future.wait(futures);
-      
+
       // Should have 500 notes (half were adds)
       expect(storage.notes.length, equals(500));
-      
+
       // Verify no corruption
       final ids = storage.notes.map((n) => n.id).toSet();
       expect(ids.length, equals(500)); // All unique

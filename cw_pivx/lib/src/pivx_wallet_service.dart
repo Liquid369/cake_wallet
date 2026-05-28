@@ -33,15 +33,19 @@ class PivxWalletService extends WalletService<
   @override
   Future<PivxWallet> create(credentials, {bool? isTestnet}) async {
     final strength = credentials.seedPhraseLength == 24 ? 256 : 128;
+    credentials.walletInfo!.network =
+        (isTestnet ?? false) ? 'testnet' : 'mainnet';
 
     final wallet = await PivxWalletBase.create(
-      mnemonic: credentials.mnemonic ?? MnemonicBip39.generate(strength: strength),
+      mnemonic:
+          credentials.mnemonic ?? MnemonicBip39.generate(strength: strength),
       password: credentials.password!,
       walletInfo: credentials.walletInfo!,
       derivationInfo: await credentials.walletInfo!.getDerivationInfo(),
       unspentCoinsInfo: unspentCoinsInfoSource,
       encryptionFileUtils: encryptionFileUtilsFor(isDirect),
       passphrase: credentials.passphrase,
+      isTestnet: isTestnet ?? false,
     );
     await wallet.save();
     await wallet.init();
@@ -62,6 +66,7 @@ class PivxWalletService extends WalletService<
         walletInfo: walletInfo,
         unspentCoinsInfo: unspentCoinsInfoSource,
         encryptionFileUtils: encryptionFileUtilsFor(isDirect),
+        isTestnet: walletInfo.network == 'testnet',
       );
       await wallet.init();
       saveBackup(name);
@@ -74,6 +79,7 @@ class PivxWalletService extends WalletService<
         walletInfo: walletInfo,
         unspentCoinsInfo: unspentCoinsInfoSource,
         encryptionFileUtils: encryptionFileUtilsFor(isDirect),
+        isTestnet: walletInfo.network == 'testnet',
       );
       await wallet.init();
       return wallet;
@@ -82,7 +88,8 @@ class PivxWalletService extends WalletService<
 
   @override
   Future<void> remove(String wallet) async {
-    File(await pathForWalletDir(name: wallet, type: getType())).delete(recursive: true);
+    File(await pathForWalletDir(name: wallet, type: getType()))
+        .delete(recursive: true);
     final walletInfo = await WalletInfo.get(wallet, getType());
     if (walletInfo == null) {
       throw Exception('Wallet not found');
@@ -93,7 +100,8 @@ class PivxWalletService extends WalletService<
         .where((unspentCoin) => unspentCoin.walletId == walletInfo.id)
         .toList();
 
-    final keysToDelete = unspentCoinsToDelete.map((unspentCoin) => unspentCoin.key).toList();
+    final keysToDelete =
+        unspentCoinsToDelete.map((unspentCoin) => unspentCoin.key).toList();
 
     if (keysToDelete.isNotEmpty) {
       await unspentCoinsInfoSource.deleteAll(keysToDelete);
@@ -101,7 +109,8 @@ class PivxWalletService extends WalletService<
   }
 
   @override
-  Future<void> rename(String currentName, String password, String newName) async {
+  Future<void> rename(
+      String currentName, String password, String newName) async {
     final currentWalletInfo = await WalletInfo.get(currentName, getType());
     if (currentWalletInfo == null) {
       throw Exception('Wallet not found');
@@ -112,6 +121,7 @@ class PivxWalletService extends WalletService<
       walletInfo: currentWalletInfo,
       unspentCoinsInfo: unspentCoinsInfoSource,
       encryptionFileUtils: encryptionFileUtilsFor(isDirect),
+      isTestnet: currentWalletInfo.network == 'testnet',
     );
 
     await currentWallet.renameWalletFiles(newName);
@@ -125,38 +135,40 @@ class PivxWalletService extends WalletService<
   }
 
   @override
-  Future<PivxWallet> restoreFromHardwareWallet(PivxNewWalletCredentials credentials) {
+  Future<PivxWallet> restoreFromHardwareWallet(
+      PivxNewWalletCredentials credentials) {
     throw UnimplementedError(
         "Restoring a PIVX wallet from a hardware wallet is not yet supported!");
   }
 
   @override
-  Future<PivxWallet> restoreFromKeys(PivxRestoreWalletFromWIFCredentials credentials, {bool? isTestnet}) async {
+  Future<PivxWallet> restoreFromKeys(
+      PivxRestoreWalletFromWIFCredentials credentials,
+      {bool? isTestnet}) async {
     // WIF (Wallet Import Format) import for PIVX
     // WIF is base58check encoded with version byte 0xD4 (mainnet) or 0xEF (testnet)
     final wif = credentials.wif;
-    
+
     // Validate WIF format
     if (wif.isEmpty) {
       throw Exception('WIF key cannot be empty');
     }
-    
+
     // PIVX WIF starts with 'Y' for mainnet compressed, '7' for mainnet uncompressed
     // or 'c' for testnet compressed, '9' for testnet uncompressed
     final isMainnet = wif.startsWith('Y') || wif.startsWith('7');
     final isTestnetWif = wif.startsWith('c') || wif.startsWith('9');
-    
+
     if (!isMainnet && !isTestnetWif) {
-      throw Exception('Invalid PIVX WIF format. Expected to start with Y, 7, c, or 9');
+      throw Exception(
+          'Invalid PIVX WIF format. Expected to start with Y, 7, c, or 9');
     }
-    
+
     // Create wallet from WIF by deriving a deterministic "mnemonic" from the key
     // Since WIF is a single key, we use watch-only mode for now
     // Full implementation would require custom key storage
-    throw UnimplementedError(
-      'WIF import requires watch-only wallet support. '
-      'Use mnemonic restore for full wallet functionality.'
-    );
+    throw UnimplementedError('WIF import requires watch-only wallet support. '
+        'Use mnemonic restore for full wallet functionality.');
   }
 
   @override
@@ -165,8 +177,10 @@ class PivxWalletService extends WalletService<
     bool? isTestnet,
   }) async {
     if (!validateMnemonic(credentials.mnemonic)) {
-      throw Exception('Invalid mnemonic: ${credentials.mnemonic}');
+      throw Exception('Invalid PIVX mnemonic');
     }
+    credentials.walletInfo!.network =
+        (isTestnet ?? false) ? 'testnet' : 'mainnet';
 
     final wallet = await PivxWalletBase.create(
       password: credentials.password!,
@@ -176,6 +190,7 @@ class PivxWalletService extends WalletService<
       unspentCoinsInfo: unspentCoinsInfoSource,
       encryptionFileUtils: encryptionFileUtilsFor(isDirect),
       passphrase: credentials.passphrase,
+      isTestnet: isTestnet ?? false,
     );
     await wallet.save();
     await wallet.init();

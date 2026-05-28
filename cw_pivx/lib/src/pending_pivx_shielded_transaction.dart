@@ -1,10 +1,11 @@
 import 'package:cw_bitcoin/electrum.dart';
 import 'package:cw_bitcoin/bitcoin_amount_format.dart';
 import 'package:cw_core/pending_transaction.dart';
+import 'package:cw_core/utils/print_verbose.dart';
 import 'sapling/sapling_factories.dart' show SaplingTransactionResult;
 
 /// Pending transaction wrapper for PIVX Sapling shielded transactions.
-/// 
+///
 /// This wraps a [SaplingTransactionResult] to implement the [PendingTransaction]
 /// interface, allowing shielded transactions to be treated uniformly with
 /// transparent transactions in the wallet UI.
@@ -19,22 +20,22 @@ class PendingPivxShieldedTransaction with PendingTransaction {
 
   /// The result from the Sapling transaction builder containing the signed tx.
   final SaplingTransactionResult result;
-  
+
   /// The Electrum client for broadcasting.
   final ElectrumClient electrumClient;
-  
+
   /// The amount being sent in satoshis/zatoshis.
   final int amount;
-  
+
   /// The transaction fee in satoshis/zatoshis.
   final int fee;
-  
+
   /// Callback called after successful broadcast.
   final Future<void> Function(dynamic)? onCommit;
-  
+
   /// Listeners for transaction commit events.
   final List<void Function(dynamic)> _listeners;
-  
+
   @override
   String get id => result.txId;
 
@@ -65,23 +66,23 @@ class PendingPivxShieldedTransaction with PendingTransaction {
         transactionRaw: hex,
         network: null, // PIVX network doesn't need to be specified here
       );
-      
+
       if (txid != id) {
         // This shouldn't happen, but log it if it does
-        print('[PendingPivxShieldedTransaction] Warning: broadcast txid $txid differs from computed $id');
+        printV('[PendingPivxShieldedTransaction] Broadcast txid mismatch');
       }
-      
+
       // Call the onCommit callback if provided
       if (onCommit != null) {
         await onCommit!(this);
       }
-      
+
       // Notify listeners
       for (final listener in _listeners) {
         listener(this);
       }
     } catch (e) {
-      throw Exception('Failed to broadcast shielded transaction: $e');
+      throw Exception('Failed to broadcast shielded transaction');
     }
   }
 

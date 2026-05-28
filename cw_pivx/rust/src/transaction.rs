@@ -117,6 +117,7 @@ pub fn validate_transaction_amounts(
 
 /// PIVX Sapling activation height.
 pub const PIVX_SAPLING_ACTIVATION: u32 = 2_700_500;
+pub const PIVX_TESTNET_SAPLING_ACTIVATION: u32 = 1_164_637;
 
 /// PIVX mainnet consensus parameters.
 #[derive(Clone, Copy, Debug)]
@@ -146,7 +147,7 @@ impl Parameters for PivxTestnet {
     
     fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
         match nu {
-            NetworkUpgrade::Sapling => Some(BlockHeight::from_u32(201)),
+            NetworkUpgrade::Sapling => Some(BlockHeight::from_u32(PIVX_TESTNET_SAPLING_ACTIVATION)),
             _ => None,
         }
     }
@@ -774,7 +775,7 @@ mod tests {
         // Reference: PIVX Core src/chainparams.cpp:445
         let testnet = PivxTestnet;
         let testnet_activation = testnet.activation_height(NetworkUpgrade::Sapling);
-        assert_eq!(testnet_activation, Some(BlockHeight::from_u32(201)),
-            "Testnet Sapling activation must be block 201");
+        assert_eq!(testnet_activation, Some(BlockHeight::from_u32(1_164_637)),
+            "Testnet Sapling activation must be block 1,164,637");
     }
 }

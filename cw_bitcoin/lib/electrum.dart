@@ -75,10 +75,11 @@ class ElectrumClient {
     } catch (_) {}
     socket = null;
 
-    final ssl = !(useSSL == false || (useSSL == null && uri.toString().contains("btc-electrum")));
+    final ssl = !(useSSL == false ||
+        (useSSL == null && uri.toString().contains("btc-electrum")));
     try {
-      socket = await ProxyWrapper()
-          .getSocksSocket(ssl, host, port, connectionTimeout: connectionTimeout);
+      socket = await ProxyWrapper().getSocksSocket(ssl, host, port,
+          connectionTimeout: connectionTimeout);
     } catch (e) {
       printV("connect: $e");
       if (e is HandshakeException) {
@@ -108,30 +109,34 @@ class ElectrumClient {
           final msg = utf8.decode(event.toList());
           // DEBUG: Log incoming data size
           if (msg.length > 1000) {
-            print('[ElectrumClient] Received large packet: ${msg.length} bytes, first 100 chars: ${msg.substring(0, 100)}');
+            print(
+                '[ElectrumClient] Received large packet: ${msg.length} bytes');
           }
-          
+
           // Accumulate data first, THEN split by newlines
           // This handles large responses that span multiple TCP packets
           unterminatedString += msg;
-          
+
           // Process only complete lines (ending with \n)
           while (unterminatedString.contains('\n')) {
             final newlineIndex = unterminatedString.indexOf('\n');
             final completeLine = unterminatedString.substring(0, newlineIndex);
             unterminatedString = unterminatedString.substring(newlineIndex + 1);
-            
+
             if (completeLine.isNotEmpty) {
               // DEBUG: Log when processing Sapling-related responses
-              if (completeLine.contains('sapling') || completeLine.length > 5000) {
-                print('[ElectrumClient] Processing line of ${completeLine.length} chars');
+              if (completeLine.contains('sapling') ||
+                  completeLine.length > 5000) {
+                print(
+                    '[ElectrumClient] Processing line of ${completeLine.length} chars');
               }
               _parseResponse(completeLine);
             }
           }
           // Any remaining data in unterminatedString will be combined with next packet
           if (unterminatedString.length > 1000) {
-            print('[ElectrumClient] Buffered partial data: ${unterminatedString.length} bytes');
+            print(
+                '[ElectrumClient] Buffered partial data: ${unterminatedString.length} bytes');
           }
         } catch (e) {
           print("socket.listen: $e");
@@ -170,7 +175,6 @@ class ElectrumClient {
     } on FormatException catch (e) {
       // Log parse errors for debugging - should be rare now with proper line accumulation
       printV("[ElectrumClient] JSON parse error: ${e.message}");
-      printV("[ElectrumClient] Problematic message (first 200 chars): ${message.substring(0, message.length > 200 ? 200 : message.length)}");
     } on TypeError catch (e) {
       printV("[ElectrumClient] Type error parsing response: $e");
     } catch (e) {
@@ -193,7 +197,8 @@ class ElectrumClient {
   }
 
   Future<List<String>> version() =>
-      call(method: 'server.version', params: ["", "1.4"]).then((dynamic result) {
+      call(method: 'server.version', params: ["", "1.4"])
+          .then((dynamic result) {
         if (result is List) {
           return result.map((dynamic val) => val.toString()).toList();
         }
@@ -201,9 +206,11 @@ class ElectrumClient {
         return [];
       });
 
-  Future<Map<String, dynamic>> getBalance(String scriptHash, {bool throwOnError = false}) async {
+  Future<Map<String, dynamic>> getBalance(String scriptHash,
+      {bool throwOnError = false}) async {
     try {
-      final result = await call(method: 'blockchain.scripthash.get_balance', params: [scriptHash]);
+      final result = await call(
+          method: 'blockchain.scripthash.get_balance', params: [scriptHash]);
       if (result is Map<String, dynamic>) {
         return result;
       }
@@ -238,7 +245,8 @@ class ElectrumClient {
       });
 
   Future<List<Map<String, dynamic>>?> getListUnspent(String scriptHash) async {
-    final result = await call(method: 'blockchain.scripthash.listunspent', params: [scriptHash]);
+    final result = await call(
+        method: 'blockchain.scripthash.listunspent', params: [scriptHash]);
 
     if (result is List) {
       return result.map((dynamic val) {
@@ -269,10 +277,13 @@ class ElectrumClient {
         return [];
       });
 
-  Future<dynamic> getTransaction({required String hash, required bool verbose}) async {
+  Future<dynamic> getTransaction(
+      {required String hash, required bool verbose}) async {
     try {
       final result = await callWithTimeout(
-          method: 'blockchain.transaction.get', params: [hash, verbose], timeout: 10000);
+          method: 'blockchain.transaction.get',
+          params: [hash, verbose],
+          timeout: 10000);
       return result;
     } on RequestFailedTimeoutException catch (_) {
       return <String, dynamic>{};
@@ -315,14 +326,18 @@ class ElectrumClient {
         return '';
       });
 
-  Future<Map<String, dynamic>> getMerkle({required String hash, required int height}) async =>
-      await call(method: 'blockchain.transaction.get_merkle', params: [hash, height])
-          as Map<String, dynamic>;
+  Future<Map<String, dynamic>> getMerkle(
+          {required String hash, required int height}) async =>
+      await call(
+          method: 'blockchain.transaction.get_merkle',
+          params: [hash, height]) as Map<String, dynamic>;
 
   Future<Map<String, dynamic>> getHeader({required int height}) async =>
-      await call(method: 'blockchain.block.get_header', params: [height]) as Map<String, dynamic>;
+      await call(method: 'blockchain.block.get_header', params: [height])
+          as Map<String, dynamic>;
 
-  BehaviorSubject<Object>? tweaksSubscribe({required int height, required int count}) {
+  BehaviorSubject<Object>? tweaksSubscribe(
+      {required int height, required int count}) {
     return subscribe<Object>(
       id: 'blockchain.tweaks.subscribe',
       method: 'blockchain.tweaks.subscribe',
@@ -331,10 +346,12 @@ class ElectrumClient {
   }
 
   Future<dynamic> getTweaks({required int height}) async =>
-      await callWithTimeout(method: 'blockchain.tweaks.subscribe', params: [height, 1, false]);
+      await callWithTimeout(
+          method: 'blockchain.tweaks.subscribe', params: [height, 1, false]);
 
   Future<double> estimatefee({required int p}) =>
-      call(method: 'blockchain.estimatefee', params: [p]).then((dynamic result) {
+      call(method: 'blockchain.estimatefee', params: [p])
+          .then((dynamic result) {
         if (result is double) {
           return result;
         }
@@ -379,9 +396,15 @@ class ElectrumClient {
       final topDoubleString = await estimatefee(p: 1);
       final middleDoubleString = await estimatefee(p: 5);
       final bottomDoubleString = await estimatefee(p: 10);
-      final top = (stringDoubleToBitcoinAmount(topDoubleString.toString()) / 1000).round();
-      final middle = (stringDoubleToBitcoinAmount(middleDoubleString.toString()) / 1000).round();
-      final bottom = (stringDoubleToBitcoinAmount(bottomDoubleString.toString()) / 1000).round();
+      final top =
+          (stringDoubleToBitcoinAmount(topDoubleString.toString()) / 1000)
+              .round();
+      final middle =
+          (stringDoubleToBitcoinAmount(middleDoubleString.toString()) / 1000)
+              .round();
+      final bottom =
+          (stringDoubleToBitcoinAmount(bottomDoubleString.toString()) / 1000)
+              .round();
 
       return [bottom, middle, top];
     } catch (_) {
@@ -398,7 +421,8 @@ class ElectrumClient {
 
   Future<int?> getCurrentBlockChainTip() async {
     try {
-      final result = await callWithTimeout(method: 'blockchain.headers.subscribe');
+      final result =
+          await callWithTimeout(method: 'blockchain.headers.subscribe');
       if (result is Map<String, dynamic>) {
         return result["height"] as int;
       }
@@ -414,7 +438,8 @@ class ElectrumClient {
   BehaviorSubject<Object>? chainTipSubscribe() {
     _id += 1;
     return subscribe<Object>(
-        id: 'blockchain.headers.subscribe', method: 'blockchain.headers.subscribe');
+        id: 'blockchain.headers.subscribe',
+        method: 'blockchain.headers.subscribe');
   }
 
   BehaviorSubject<Object>? scripthashUpdate(String scripthash) {
@@ -426,7 +451,9 @@ class ElectrumClient {
   }
 
   BehaviorSubject<T>? subscribe<T>(
-      {required String id, required String method, List<Object> params = const []}) {
+      {required String id,
+      required String method,
+      List<Object> params = const []}) {
     try {
       if (socket == null) {
         return null;
@@ -443,7 +470,9 @@ class ElectrumClient {
   }
 
   Future<dynamic> call(
-      {required String method, List<Object> params = const [], Function(int)? idCallback}) async {
+      {required String method,
+      List<Object> params = const [],
+      Function(int)? idCallback}) async {
     if (!isConnected) {
       print('[ElectrumClient] call($method) - NOT CONNECTED, returning null');
       return null;
@@ -454,20 +483,17 @@ class ElectrumClient {
     final id = _id;
     idCallback?.call(id);
     _registryTask(id, completer);
-    
+
     final request = jsonrpc(method: method, id: id, params: params);
-    // DEBUG: Log Sapling requests
-    if (method.contains('sapling')) {
-      print('[ElectrumClient] Sending request id=$id, method=$method, params=$params');
-      print('[ElectrumClient] Raw request: ${request.trim()}');
-    }
     socket!.write(request);
 
     return completer.future;
   }
 
   Future<dynamic> callWithTimeout(
-      {required String method, List<Object> params = const [], int timeout = 5000}) async {
+      {required String method,
+      List<Object> params = const [],
+      int timeout = 5000}) async {
     try {
       if (!isConnected) return null;
 
@@ -515,7 +541,8 @@ class ElectrumClient {
   }
 
   void _registryTask(int id, Completer<dynamic> completer) =>
-      _tasks[id.toString()] = SocketTask(completer: completer, isSubscription: false);
+      _tasks[id.toString()] =
+          SocketTask(completer: completer, isSubscription: false);
 
   void _regisrySubscription(String id, BehaviorSubject<dynamic> subject) =>
       _tasks[id] = SocketTask(subject: subject, isSubscription: true);
@@ -536,7 +563,8 @@ class ElectrumClient {
     }
   }
 
-  void _methodHandler({required String method, required Map<String, dynamic> request}) {
+  void _methodHandler(
+      {required String method, required Map<String, dynamic> request}) {
     switch (method) {
       case 'blockchain.headers.subscribe':
         final params = request['params'] as List<dynamic>;
@@ -581,11 +609,12 @@ class ElectrumClient {
     // Handle id as either int or String
     final id = rawId?.toString();
     final result = response['result'];
-    
+
     // Debug logging for Sapling responses
     final hasLargeResult = result is List && result.length > 0;
     if (hasLargeResult || rawId != null) {
-      print('[ElectrumClient] Response: id=$id (${rawId.runtimeType}), method=$method, result type=${result.runtimeType}${result is List ? ', length=${result.length}' : ''}');
+      print(
+          '[ElectrumClient] Response: id=$id (${rawId.runtimeType}), method=$method, result type=${result.runtimeType}${result is List ? ', length=${result.length}' : ''}');
     }
 
     try {
@@ -594,7 +623,7 @@ class ElectrumClient {
         final errorMessage = error['message'] as String?;
         if (errorMessage != null) {
           _errors[id!] = errorMessage;
-          print('[ElectrumClient] Error for id=$id: $errorMessage');
+          print('[ElectrumClient] Error for id=$id');
         }
       }
     } catch (_) {}
