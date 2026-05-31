@@ -17,39 +17,39 @@ impl Network {
             Network::Testnet => 1,
         }
     }
-    
+
     pub fn hrp_sapling_payment_address(&self) -> &'static str {
         match self {
             Network::Mainnet => "ps",
             Network::Testnet => "ptestsapling",
         }
     }
-    
+
     pub fn hrp_sapling_extended_spending_key(&self) -> &'static str {
         match self {
             Network::Mainnet => "p-secret-extended-key-main",
             Network::Testnet => "p-secret-extended-key-test",
         }
     }
-    
+
     pub fn hrp_sapling_extended_full_viewing_key(&self) -> &'static str {
         match self {
             Network::Mainnet => "pviews",
             Network::Testnet => "pviewtestsapling",
         }
     }
-    
+
     pub fn hrp_sapling_incoming_viewing_key(&self) -> &'static str {
         match self {
             Network::Mainnet => "pivks",
             Network::Testnet => "pivktestsapling",
         }
     }
-    
+
     pub fn sapling_activation_height(&self) -> u32 {
         match self {
             Network::Mainnet => 2_700_500,
-            Network::Testnet => 1_164_637,
+            Network::Testnet => 201,
         }
     }
 }

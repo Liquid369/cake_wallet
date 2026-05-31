@@ -72,6 +72,7 @@ class ChunkLength {
       'plain': plain,
     };
   }
+
   @override
   String toString() {
     return 'ChunkLength(encrypted: $encrypted, plain: $plain)';
@@ -89,7 +90,8 @@ class ChunkDetails {
 
   factory ChunkDetails.fromJson(Map<String, dynamic> json) {
     return ChunkDetails(
-      sha512sum: ChunkChecksum.fromJson(json['sha512sum'] as Map<String, dynamic>),
+      sha512sum:
+          ChunkChecksum.fromJson(json['sha512sum'] as Map<String, dynamic>),
       length: ChunkLength.fromJson(json['length'] as Map<String, dynamic>),
     );
   }
@@ -123,7 +125,9 @@ class BackupMetadata {
     return BackupMetadata(
       version: BackupVersion.values[json['version'] as int],
       sha512sum: json['sha512sum'] as String,
-      chunks: (json['chunks'] as List<dynamic>).map((chunk) => ChunkDetails.fromJson(chunk as Map<String, dynamic>)).toList(),
+      chunks: (json['chunks'] as List<dynamic>)
+          .map((chunk) => ChunkDetails.fromJson(chunk as Map<String, dynamic>))
+          .toList(),
       cakeVersion: json['cakeVersion'] as String,
     );
   }
@@ -144,22 +148,24 @@ class BackupMetadata {
 }
 
 class BackupServiceV3 extends $BackupService {
-  BackupServiceV3(super.secureStorage, super.transactionDescriptionBox, super.keyService, super.sharedPreferences);
+  BackupServiceV3(super.secureStorage, super.transactionDescriptionBox,
+      super.keyService, super.sharedPreferences);
 
   static BackupVersion get currentVersion => BackupVersion.v3;
 
-  Future<File> exportBackupFile(String password, {String nonce = secrets.backupSalt}) {
+  Future<File> exportBackupFile(String password,
+      {String nonce = secrets.backupSalt}) {
     return exportBackupFileV3(password, nonce: nonce);
   }
 
   BackupVersion getVersionFile(File data) {
     final raf = data.openSync(mode: FileMode.read);
-    
+
     try {
       // Read first 4 bytes to check both version and zip signature
       final buffer = Uint8List(1);
       final bytesRead = raf.readIntoSync(buffer);
-      
+
       if (bytesRead == 0) {
         throw Exception('Invalid backup file: empty file');
       }
@@ -183,7 +189,8 @@ class BackupServiceV3 extends $BackupService {
         }
         final metadataBytes = metadataFile.rawContent!.readBytes();
         final metadataString = utf8.decode(metadataBytes);
-        final metadataJsonRaw = json.decode(metadataString) as Map<String, dynamic>;
+        final metadataJsonRaw =
+            json.decode(metadataString) as Map<String, dynamic>;
         final metadata = BackupMetadata.fromJson(metadataJsonRaw);
         if (metadata.version == BackupVersion.v3) {
           return BackupVersion.v3;
@@ -196,7 +203,8 @@ class BackupServiceV3 extends $BackupService {
     }
   }
 
-  Future<void> importBackupFile(File file, String password, {String nonce = secrets.backupSalt}) {
+  Future<void> importBackupFile(File file, String password,
+      {String nonce = secrets.backupSalt}) {
     final version = getVersionFile(file);
     switch (version) {
       case BackupVersion.unknown:
@@ -213,7 +221,8 @@ class BackupServiceV3 extends $BackupService {
     }
   }
 
-  Future<void> importBackupFileV3(File file, String password, {String nonce = secrets.backupSalt}) async{
+  Future<void> importBackupFileV3(File file, String password,
+      {String nonce = secrets.backupSalt}) async {
     // Overall design of v3 backup is the following:
     // 1. backup.zip - plaintext zip file that user can open with any archive manager
     // 2. backup.zip/README.txt - text file to let user know what is inside of this file
@@ -236,32 +245,38 @@ class BackupServiceV3 extends $BackupService {
       throw Exception('Invalid v3 backup: missing data.bin');
     }
     final dataStream = dataFile.rawContent!.getStream();
-    
+
     final decryptedData = File('${file.path}_decrypted'); // decrypted zip file
     if (decryptedData.existsSync()) {
       decryptedData.deleteSync();
     }
     decryptedData.createSync(recursive: true);
-    decryptedData.writeAsBytesSync(Uint8List(0), mode: FileMode.write, flush: true);
-    
+    decryptedData.writeAsBytesSync(Uint8List(0),
+        mode: FileMode.write, flush: true);
+
     int chunkIndex = 0;
     for (var chunk in metadata.chunks) {
       chunkIndex++;
-      final chunkBytes = dataStream.readBytes(chunk.length.encrypted).toUint8List();
-      final chunkChecksum = (await sha512.bind(Stream.fromIterable([chunkBytes])).first).toString();
+      final chunkBytes =
+          dataStream.readBytes(chunk.length.encrypted).toUint8List();
+      final chunkChecksum =
+          (await sha512.bind(Stream.fromIterable([chunkBytes])).first)
+              .toString();
 
       // readBytes stores position internally, so we don't need to think about it.
       if (chunk.sha512sum.encrypted != chunkChecksum) {
-        throw Exception('Invalid v3 backup: chunk (${chunk.length.encrypted} bytes) checksum mismatch at index $chunkIndex\n'
+        throw Exception(
+            'Invalid v3 backup: chunk (${chunk.length.encrypted} bytes) checksum mismatch at index $chunkIndex\n'
             'expected: ${chunk.sha512sum.encrypted}\n'
             'got: $chunkChecksum');
       }
       final decryptedChunk = await cake_backup.decrypt(password, chunkBytes);
-      decryptedData.writeAsBytesSync(decryptedChunk, mode: FileMode.append, flush: true);
+      decryptedData.writeAsBytesSync(decryptedChunk,
+          mode: FileMode.append, flush: true);
     }
 
-
-    final sha512sum = (await sha512.bind(decryptedData.openRead()).first).toString();
+    final sha512sum =
+        (await sha512.bind(decryptedData.openRead()).first).toString();
     if (sha512sum.toString() != metadata.sha512sum) {
       throw Exception('Invalid v3 backup: SHA512 checksum mismatch\n'
           'expected: ${metadata.sha512sum}\n'
@@ -278,17 +293,14 @@ class BackupServiceV3 extends $BackupService {
     final decryptedDataStream = InputFileStream(decryptedData.path);
     final backupArchive = zip.decodeStream(decryptedDataStream);
 
-
     final appDir = await getAppDir();
 
     outer:
     for (var file in backupArchive.files) {
       final filename = file.name;
-      for (var ignore in $BackupService.ignoreFiles) {
-        if (filename.endsWith(ignore) && !filename.contains("wallets/")) {
-          printV("ignoring backup file: $filename");
-          continue outer;
-        }
+      if ($BackupService.shouldIgnoreBackupPath(filename)) {
+        printV("ignoring backup file: $filename");
+        continue outer;
       }
       printV("restoring: $filename");
       if (file.isFile) {
@@ -303,7 +315,7 @@ class BackupServiceV3 extends $BackupService {
           dir.createSync(recursive: true);
         }
       }
-    };
+    }
 
     // Continue importing the backup the old way
     await super.verifyWallets();
@@ -334,7 +346,10 @@ class BackupServiceV3 extends $BackupService {
 
     for (final expectedHardwareWallet in expectedHardwareWallets) {
       final info = expectedHardwareWallet as Map<String, dynamic>;
-      final actualWalletInfo = await WalletInfo.get(info['name'] as String, WalletType.values.firstWhere((e) => e.toString() == info['type'] as String));
+      final actualWalletInfo = await WalletInfo.get(
+          info['name'] as String,
+          WalletType.values
+              .firstWhere((e) => e.toString() == info['type'] as String));
       if (actualWalletInfo != null &&
           info["hardwareWalletType"] !=
               actualWalletInfo.hardwareWalletType?.index) {
@@ -345,7 +360,8 @@ class BackupServiceV3 extends $BackupService {
     }
   }
 
-  Future<File> exportBackupFileV3(String password, {String nonce = secrets.backupSalt}) async {
+  Future<File> exportBackupFileV3(String password,
+      {String nonce = secrets.backupSalt}) async {
     final metadata = BackupMetadata(
       version: BackupVersion.v3,
       sha512sum: 'tbd',
@@ -366,7 +382,8 @@ class BackupServiceV3 extends $BackupService {
     final transactionDescriptionDumpFile =
         File('${tmpDir.path}/~_transaction_descriptions_dump_TMP');
 
-    final transactionDescriptionData = super.transactionDescriptionBox
+    final transactionDescriptionData = super
+        .transactionDescriptionBox
         .toMap()
         .map((key, value) => MapEntry(key.toString(), value.toJson()));
     final transactionDescriptionDump = jsonEncode(transactionDescriptionData);
@@ -382,12 +399,10 @@ class BackupServiceV3 extends $BackupService {
       if (entity.path == archivePath || entity.path == tmpDir.path) {
         continue;
       }
-      for (var ignore in $BackupService.ignoreFiles) {
-        final filename = entity.absolute.path;
-        if (filename.endsWith(ignore) && !filename.contains("wallets/")) {
-          printV("ignoring backup file: $filename");
-          continue outer;
-        }
+      final filename = entity.absolute.path;
+      if ($BackupService.shouldIgnoreBackupPath(filename)) {
+        printV("ignoring backup file: $filename");
+        continue outer;
       }
 
       if (entity.statSync().type == FileSystemEntityType.directory) {
@@ -398,10 +413,12 @@ class BackupServiceV3 extends $BackupService {
     }
     await keychainDumpFile.writeAsBytes(keychainDump.toList());
     await preferencesDumpFile.writeAsString(preferencesDump);
-    await transactionDescriptionDumpFile.writeAsString(transactionDescriptionDump);
+    await transactionDescriptionDumpFile
+        .writeAsString(transactionDescriptionDump);
     await zipEncoder.addFile(preferencesDumpFile, '~_preferences_dump');
     await zipEncoder.addFile(keychainDumpFile, '~_keychain_dump');
-    await zipEncoder.addFile(transactionDescriptionDumpFile, '~_transaction_descriptions_dump');
+    await zipEncoder.addFile(
+        transactionDescriptionDumpFile, '~_transaction_descriptions_dump');
     await zipEncoder.close();
 
     final dataBinUnencrypted = File(archivePath);
@@ -419,15 +436,15 @@ class BackupServiceV3 extends $BackupService {
     int chunkIndex = 0;
     final stopwatch = Stopwatch()..start();
     printV("Starting backup encryption...");
-    
-    metadata.sha512sum = (await sha512.bind(dataBinUnencrypted.openRead()).first).toString();
+
+    metadata.sha512sum =
+        (await sha512.bind(dataBinUnencrypted.openRead()).first).toString();
 
     final raf = await dataBinUnencrypted.open();
-    
 
     while (true) {
       printV("Reading chunk ${chunkIndex++}");
-      
+
       stopwatch.reset();
       final chunk = await raf.read(chunkSize);
       printV("Chunk read completed in ${stopwatch.elapsed}");
@@ -435,14 +452,16 @@ class BackupServiceV3 extends $BackupService {
       if (chunk.length == 0) {
         break;
       }
-      
+
       stopwatch.reset();
       final encryptedChunk = await cake_backup.encrypt(password, chunk);
       printV("Encryption completed in ${stopwatch.elapsed}");
 
       stopwatch.reset();
-      final sha512sumEncryptedChunk = await sha512.bind(Stream.fromIterable([encryptedChunk])).first;
-      final sha512sumUnencryptedChunk = await sha512.bind(Stream.fromIterable([chunk])).first;
+      final sha512sumEncryptedChunk =
+          await sha512.bind(Stream.fromIterable([encryptedChunk])).first;
+      final sha512sumUnencryptedChunk =
+          await sha512.bind(Stream.fromIterable([chunk])).first;
       printV("Hashing completed in ${stopwatch.elapsed}");
 
       stopwatch.reset();
@@ -457,7 +476,7 @@ class BackupServiceV3 extends $BackupService {
           plain: chunk.length,
         ),
       ));
-      
+
       await dataBinWriter.flush();
       printV("Writing completed in ${stopwatch.elapsed}");
     }
@@ -469,9 +488,11 @@ class BackupServiceV3 extends $BackupService {
     final packageInfo = await PackageInfo.fromPlatform();
     metadata.cakeVersion = packageInfo.version;
 
-    metadataFile.writeAsStringSync(JsonEncoder.withIndent('    ').convert(metadata.toJson()));
+    metadataFile.writeAsStringSync(
+        JsonEncoder.withIndent('    ').convert(metadata.toJson()));
     final readmeFile = File('${tmpDir.path}/README.txt');
-    readmeFile.writeAsStringSync('''This is a ${packageInfo.appName} backup. Do not modify this archive.
+    readmeFile.writeAsStringSync(
+        '''This is a ${packageInfo.appName} backup. Do not modify this archive.
 
 App version: ${packageInfo.version}
 

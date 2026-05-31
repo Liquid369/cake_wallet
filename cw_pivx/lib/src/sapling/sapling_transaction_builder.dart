@@ -1,12 +1,12 @@
 /// Sapling transaction builder.
-/// 
+///
 /// This module handles building Sapling shielded transactions including:
 /// - Shielded-to-shielded (z-to-z) transfers
 /// - Transparent-to-shielded (t-to-z) shielding
 /// - Shielded-to-transparent (z-to-t) deshielding
-/// 
+///
 /// ## Transaction Structure
-/// 
+///
 /// A PIVX v3 transaction with Sapling components has:
 /// - version: 3 (with version group ID for Sapling)
 /// - transparent inputs (optional): Standard UTXO spends
@@ -14,9 +14,9 @@
 /// - sapling spends: Shielded inputs (nullifier + spend proof)
 /// - sapling outputs: Shielded outputs (cmu + enc note + output proof)
 /// - binding signature: Proves value balance
-/// 
+///
 /// ## Sapling Spend
-/// 
+///
 /// Each Sapling spend reveals:
 /// - Nullifier: Unique identifier that marks this note as spent
 /// - Anchor: Commitment tree root that includes this note
@@ -24,22 +24,22 @@
 /// - Randomized key rk: For signature verification
 /// - Spend proof (Groth16): Proves knowledge of note + spending authority
 /// - Spend auth signature: Signs the transaction with the randomized key
-/// 
+///
 /// ## Sapling Output
-/// 
+///
 /// Each Sapling output contains:
 /// - Commitment (cmu): Hash of the new note
 /// - Ephemeral key (epk): For key agreement
 /// - Ciphertext (enc): Encrypted note plaintext
 /// - Value commitment: Homomorphic commitment to the value
 /// - Output proof (Groth16): Proves valid note construction
-/// 
+///
 /// ## Proof Generation
-/// 
+///
 /// Sapling uses Groth16 zk-SNARKs for proving statements:
 /// - Spend proof: ~2KB, proves spending authority + value
 /// - Output proof: ~1KB, proves valid note construction
-/// 
+///
 /// Proof generation requires the Sapling proving parameters:
 /// - sapling-spend.params (~47 MB): For spend proofs
 /// - sapling-output.params (~3.5 MB): For output proofs
@@ -81,6 +81,7 @@ class SaplingTransactionOptions {
     this.useShieldedInputs = true,
     this.useShieldedChange = true,
     this.minConfirmations = 10,
+    this.spendAllShieldedInputs = false,
   });
 
   /// Destination address (can be shielded or transparent).
@@ -103,6 +104,9 @@ class SaplingTransactionOptions {
 
   /// Minimum confirmations for input notes.
   final int minConfirmations;
+
+  /// Spend every locally spendable shielded note and deduct the fee from amount.
+  final bool spendAllShieldedInputs;
 }
 
 /// Status callback for transaction building.
@@ -115,25 +119,25 @@ typedef TransactionProgressCallback = void Function(
 enum TransactionBuildStage {
   /// Selecting inputs and computing values.
   selectingInputs,
-  
+
   /// Building the transaction structure.
   buildingTransaction,
-  
+
   /// Generating spend proofs.
   generatingSpendProofs,
-  
+
   /// Generating output proofs.
   generatingOutputProofs,
-  
+
   /// Signing the transaction.
   signing,
-  
+
   /// Transaction complete.
   complete,
 }
 
 /// Builder for Sapling shielded transactions.
-/// 
+///
 /// ## Usage
 /// ```dart
 /// final builder = SaplingTransactionBuilder(
@@ -141,10 +145,10 @@ enum TransactionBuildStage {
 ///   syncEngine: syncEngine,
 ///   isTestnet: false,
 /// );
-/// 
+///
 /// // Ensure proving params are loaded
 /// await builder.loadProvingParams();
-/// 
+///
 /// // Build a shielded transaction
 /// final result = await builder.buildTransaction(
 ///   options: SaplingTransactionOptions(
@@ -156,7 +160,7 @@ enum TransactionBuildStage {
 ///     print('Stage: $stage, Progress: ${(progress * 100).toInt()}%');
 ///   },
 /// );
-/// 
+///
 /// print('Transaction ID: ${result.txid}');
 /// print('Transaction hex: ${result.txHex}');
 /// ```
@@ -181,10 +185,10 @@ abstract class SaplingTransactionBuilder {
   bool get hasProvingParams;
 
   /// Load the Sapling proving parameters.
-  /// 
+  ///
   /// This loads sapling-spend.params and sapling-output.params from storage.
   /// If not present, they will be downloaded from the Zcash download server.
-  /// 
+  ///
   /// [onProgress] - Callback for download progress (0.0 to 1.0).
   Future<void> loadProvingParams({
     void Function(double progress)? onProgress,
@@ -194,17 +198,17 @@ abstract class SaplingTransactionBuilder {
   Future<bool> hasLocalProvingParams();
 
   /// Download proving parameters if not available.
-  /// 
+  ///
   /// [onProgress] - Callback for download progress (0.0 to 1.0).
   Future<void> downloadProvingParams({
     void Function(double progress)? onProgress,
   });
 
   /// Build a Sapling transaction.
-  /// 
+  ///
   /// [options] - Transaction options (destination, amount, etc.).
   /// [onProgress] - Callback for build progress.
-  /// 
+  ///
   /// Returns the signed transaction ready for broadcast.
   Future<SaplingTransactionResult> buildTransaction({
     required SaplingTransactionOptions options,
@@ -212,7 +216,7 @@ abstract class SaplingTransactionBuilder {
   });
 
   /// Build a shielding transaction (transparent to shielded).
-  /// 
+  ///
   /// [utxos] - Transparent UTXOs to shield.
   /// [toShieldedAddress] - Destination shielded address.
   /// [amount] - Amount to shield (or null for all).
@@ -225,7 +229,7 @@ abstract class SaplingTransactionBuilder {
   });
 
   /// Build a deshielding transaction (shielded to transparent).
-  /// 
+  ///
   /// [toTransparentAddress] - Destination transparent address.
   /// [amount] - Amount to deshield.
   /// [onProgress] - Callback for build progress.
@@ -236,7 +240,7 @@ abstract class SaplingTransactionBuilder {
   });
 
   /// Estimate the fee for a transaction.
-  /// 
+  ///
   /// [saplingInputs] - Number of shielded inputs.
   /// [saplingOutputs] - Number of shielded outputs.
   /// [transparentInputs] - Number of transparent inputs.
@@ -256,7 +260,7 @@ abstract class SaplingTransactionBuilder {
   }
 
   /// Validate an address (transparent or shielded).
-  /// 
+  ///
   /// Returns true if the address is valid for this network.
   bool validateAddress(String address);
 

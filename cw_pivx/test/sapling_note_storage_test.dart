@@ -436,6 +436,94 @@ void main() {
       expect(storage2.hasPersistedTreePosition, isFalse);
     });
 
+    test('sync completion persists scanned block hashes', () async {
+      final walletId =
+          'scanned_hashes_${DateTime.now().millisecondsSinceEpoch}';
+      final storage1 = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        allowUnencryptedStorage: true,
+      );
+      await storage1.load();
+
+      await storage1.completeSyncRange(
+        lastSyncedHeight: 2700502,
+        nextTreePosition: 0,
+        treePositionIsTrusted: false,
+        blockHashes: {
+          2700500: 'hash_0',
+          2700501: 'hash_1',
+          2700502: 'hash_2',
+        },
+      );
+
+      final storage2 = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        allowUnencryptedStorage: true,
+      );
+      await storage2.load();
+
+      expect(storage2.scannedBlockHashes[2700500], equals('hash_0'));
+      expect(storage2.scannedBlockHashes[2700502], equals('hash_2'));
+    });
+
+    test('rewind removes stale notes and clears reorged spend markers',
+        () async {
+      final walletId = 'rewind_${DateTime.now().millisecondsSinceEpoch}';
+      final storage1 = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        allowUnencryptedStorage: true,
+      );
+      await storage1.load();
+
+      await storage1.addNote(StoredSaplingNote(
+        id: 'kept_tx:0',
+        value: 5000,
+        height: 2700501,
+        txid: 'kept_tx',
+        outputIndex: 0,
+        treePosition: 0,
+        cmu: 'cmu_kept',
+        nullifier: 'nf_kept',
+      ));
+      await storage1.addNote(StoredSaplingNote(
+        id: 'removed_tx:0',
+        value: 7000,
+        height: 2700504,
+        txid: 'removed_tx',
+        outputIndex: 0,
+        treePosition: 1,
+        cmu: 'cmu_removed',
+      ));
+      await storage1.markSpentByNullifier(
+        'nf_kept',
+        'spending_tx',
+        spendingHeight: 2700504,
+      );
+      await storage1.completeSyncRange(
+        lastSyncedHeight: 2700505,
+        nextTreePosition: 12,
+        treePositionIsTrusted: true,
+        blockHashes: {
+          2700501: 'hash_1',
+          2700504: 'hash_4',
+          2700505: 'hash_5',
+        },
+      );
+
+      await storage1.rewindToHeight(2700502);
+
+      expect(storage1.lastSyncedHeight, equals(2700502));
+      expect(storage1.notes.map((note) => note.id), equals(['kept_tx:0']));
+      expect(storage1.notes.single.isSpent, isFalse);
+      expect(storage1.notes.single.spendingTxid, isNull);
+      expect(storage1.nextTreePosition, equals(0));
+      expect(storage1.hasPersistedTreePosition, isFalse);
+      expect(storage1.scannedBlockHashes.containsKey(2700504), isFalse);
+    });
+
     test('unencrypted storage is rejected unless explicitly allowed', () async {
       final protectedStorage = SaplingNoteStorage(
         walletId: 'encrypted_required_${DateTime.now().millisecondsSinceEpoch}',

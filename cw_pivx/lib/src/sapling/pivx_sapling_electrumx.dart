@@ -17,7 +17,7 @@
 /// ## Activation Heights
 ///
 /// - Mainnet: 2,700,500
-/// - Testnet: 1,164,637
+/// - Testnet: 201
 
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
@@ -30,11 +30,18 @@ int? _optionalInt(Object? value) {
   return null;
 }
 
+String? _optionalString(Object? value) {
+  if (value == null) return null;
+  final text = value.toString();
+  return text.isEmpty ? null : text;
+}
+
 /// Helper class for batch fetch results.
 class _BatchResult {
   final List<SaplingBlock> blocks;
   final int endHeight;
-  _BatchResult(this.blocks, this.endHeight);
+  final Map<int, String> blockHashes;
+  _BatchResult(this.blocks, this.endHeight, this.blockHashes);
 }
 
 class SaplingRpcException implements Exception {
@@ -52,8 +59,14 @@ class SaplingRpcCapabilities {
   final bool supportsGlobalOutputPositions;
   final bool supportsBestAnchor;
   final bool supportsWitness;
+  final bool supportsBlockHashes;
+  final bool supportsStructuredErrors;
   final String? network;
   final int? activationHeight;
+  final int? maxBlockRange;
+  final String? contract;
+  final String? serverVersion;
+  final String? pivxCoreVersion;
   final Set<String> methods;
 
   const SaplingRpcCapabilities({
@@ -61,18 +74,42 @@ class SaplingRpcCapabilities {
     required this.supportsGlobalOutputPositions,
     required this.supportsBestAnchor,
     required this.supportsWitness,
+    this.supportsBlockHashes = false,
+    this.supportsStructuredErrors = false,
     this.network,
     this.activationHeight,
+    this.maxBlockRange,
+    this.contract,
+    this.serverVersion,
+    this.pivxCoreVersion,
     this.methods = const {},
   });
 
   factory SaplingRpcCapabilities.fromJson(Map<String, dynamic> json) {
+    final methodList = <String>{};
     final rawMethods = json['methods'] as List<dynamic>? ??
         json['supported_methods'] as List<dynamic>?;
-    final methodList =
-        rawMethods?.map((e) => e.toString()).toSet() ?? const <String>{};
-    final features = json['features'] as Map<String, dynamic>?;
-    final network = json['network'] as String?;
+    if (rawMethods != null) {
+      methodList.addAll(rawMethods.map((e) => e.toString()));
+    }
+    final aliases = json['aliases'];
+    if (aliases is Map) {
+      methodList.addAll(aliases.keys.map((e) => e.toString()));
+      for (final value in aliases.values) {
+        if (value is List) {
+          methodList.addAll(value.map((e) => e.toString()));
+        } else if (value != null) {
+          methodList.add(value.toString());
+        }
+      }
+    } else if (aliases is List) {
+      methodList.addAll(aliases.map((e) => e.toString()));
+    }
+    final rawFeatures = json['features'];
+    final features = rawFeatures is Map ? rawFeatures : null;
+    final rawRangeFormat = json['range_response_format'];
+    final rangeFormat = rawRangeFormat is Map ? rawRangeFormat : null;
+    final network = _optionalString(json['network']);
     final activationHeight = _optionalInt(json['sapling_activation_height']) ??
         _optionalInt(json['activation_height']);
 
@@ -83,14 +120,30 @@ class SaplingRpcCapabilities {
           json['supports_block_range'] == true,
       supportsGlobalOutputPositions: json['global_output_positions'] == true ||
           json['supports_global_output_positions'] == true ||
-          features?['global_output_positions'] == true,
+          features?['global_output_positions'] == true ||
+          rangeFormat?['global_output_positions'] == true,
       supportsBestAnchor: hasMethod('blockchain.sapling.get_best_anchor') ||
           hasMethod('blockchain.sapling.get_tree_state') ||
           json['supports_best_anchor'] == true,
       supportsWitness: hasMethod('blockchain.sapling.get_witness') ||
           json['supports_witness'] == true,
+      supportsBlockHashes: json['block_hashes'] == true ||
+          json['supports_block_hashes'] == true ||
+          features?['block_hashes'] == true ||
+          rangeFormat?['block_hashes'] == true,
+      supportsStructuredErrors: json['structured_errors'] == true ||
+          json['supports_structured_errors'] == true ||
+          features?['structured_errors'] == true,
       network: network,
       activationHeight: activationHeight,
+      maxBlockRange: _optionalInt(json['max_block_range']) ??
+          _optionalInt(json['max_range_size']),
+      contract: _optionalString(json['contract']) ??
+          _optionalString(json['contract_id']),
+      serverVersion: _optionalString(json['server_version']) ??
+          _optionalString(json['electrumx_version']),
+      pivxCoreVersion: _optionalString(json['pivx_core_version']) ??
+          _optionalString(json['core_version']),
       methods: methodList,
     );
   }
@@ -107,7 +160,7 @@ class SaplingRpcCapabilities {
 /// PIVX Sapling activation heights.
 class SaplingActivation {
   static const int mainnet = 2700500;
-  static const int testnet = 1164637;
+  static const int testnet = 201;
 }
 
 /// Result from get_nullifier_status RPC.
@@ -267,6 +320,21 @@ class SaplingOutputsResult {
       truncated: json['truncated'] as bool? ?? false,
     );
   }
+}
+
+/// Parsed result from a Sapling block-range response.
+class SaplingBlockRangeResult {
+  final int startHeight;
+  final int endHeight;
+  final List<SaplingBlock> blocks;
+  final Map<int, String> blockHashes;
+
+  SaplingBlockRangeResult({
+    required this.startHeight,
+    required this.endHeight,
+    required this.blocks,
+    this.blockHashes = const {},
+  });
 }
 
 /// A Sapling spend from the blockchain.
@@ -547,7 +615,8 @@ class PIVXSaplingElectrumX {
     return text.contains('method not found') ||
         text.contains('unknown method') ||
         text.contains('unsupported') ||
-        text.contains('not implemented');
+        text.contains('not implemented') ||
+        text.contains('method unavailable');
   }
 
   /// Probe the Sapling RPC policy/capabilities for the active node.
@@ -555,8 +624,11 @@ class PIVXSaplingElectrumX {
     if (_capabilities != null) return _capabilities!;
 
     try {
-      final result = await _client.call(
-        method: 'blockchain.sapling.get_capabilities',
+      final result = await _callFirstSupported(
+        methods: const [
+          'blockchain.sapling.capabilities',
+          'blockchain.sapling.get_capabilities',
+        ],
         params: <Object>[],
       );
       if (result is! Map) {
@@ -658,7 +730,15 @@ class PIVXSaplingElectrumX {
   Future<List<SaplingBlock>> getBlockRange(
     int startHeight, {
     int? endHeight,
+  }) async =>
+      (await getBlockRangeResult(startHeight, endHeight: endHeight)).blocks;
+
+  /// Get blocks plus v1 envelope metadata for a Sapling height range.
+  Future<SaplingBlockRangeResult> getBlockRangeResult(
+    int startHeight, {
+    int? endHeight,
   }) async {
+    final expectedEnd = endHeight ?? startHeight;
     final params = <Object>[startHeight];
     if (endHeight != null) params.add(endHeight);
 
@@ -669,15 +749,16 @@ class PIVXSaplingElectrumX {
 
     if (result == null) {
       throw SaplingRpcException(
-        'PIVX Sapling get_block_range returned null for $startHeight-${endHeight ?? startHeight}',
+        'PIVX Sapling get_block_range returned null for $startHeight-$expectedEnd',
       );
     }
 
     dynamic blocksResult = result;
+    var blockHashes = <int, String>{};
     if (result is Map) {
       if (result['complete'] != true) {
         throw SaplingRpcException(
-          'PIVX Sapling get_block_range returned an incomplete range for $startHeight-${endHeight ?? startHeight}',
+          'PIVX Sapling get_block_range returned an incomplete range for $startHeight-$expectedEnd',
         );
       }
       final responseStart = _optionalInt(result['from_height']) ??
@@ -691,27 +772,73 @@ class PIVXSaplingElectrumX {
           'PIVX Sapling get_block_range returned a mismatched start height',
         );
       }
-      if (responseEnd != null && responseEnd != (endHeight ?? startHeight)) {
+      if (responseEnd != null && responseEnd != expectedEnd) {
         throw SaplingRpcException(
           'PIVX Sapling get_block_range returned a mismatched end height',
         );
       }
+      blockHashes = _parseBlockHashes(
+        result['block_hashes'] ?? result['blockHashes'],
+        responseStart ?? startHeight,
+      );
       blocksResult = result['blocks'];
     }
 
     if (blocksResult is! List) {
       throw SaplingRpcException(
-        'PIVX Sapling get_block_range returned ${blocksResult.runtimeType} for $startHeight-${endHeight ?? startHeight}',
+        'PIVX Sapling get_block_range returned ${blocksResult.runtimeType} for $startHeight-$expectedEnd',
       );
     }
 
-    if (blocksResult.isEmpty) {
-      return [];
-    }
-
-    return blocksResult
+    final blocks = blocksResult
         .map((e) => SaplingBlock.fromJson(e as Map<String, dynamic>))
         .toList();
+    for (final block in blocks) {
+      if (block.hash.isNotEmpty) {
+        blockHashes[block.height] = block.hash;
+      }
+    }
+
+    return SaplingBlockRangeResult(
+      startHeight: startHeight,
+      endHeight: expectedEnd,
+      blocks: blocks,
+      blockHashes: blockHashes,
+    );
+  }
+
+  Map<int, String> _parseBlockHashes(Object? raw, int startHeight) {
+    final hashes = <int, String>{};
+    if (raw is Map) {
+      for (final entry in raw.entries) {
+        final height = entry.key is int
+            ? entry.key as int
+            : int.tryParse(entry.key.toString());
+        final hash = entry.value?.toString();
+        if (height != null && hash != null && hash.isNotEmpty) {
+          hashes[height] = hash;
+        }
+      }
+    } else if (raw is List) {
+      for (var i = 0; i < raw.length; i++) {
+        final item = raw[i];
+        if (item is Map) {
+          final height = _optionalInt(item['height']) ??
+              _optionalInt(item['block_height']);
+          final hash = _optionalString(item['hash']) ??
+              _optionalString(item['block_hash']);
+          if (height != null && hash != null) {
+            hashes[height] = hash;
+          }
+        } else if (item != null) {
+          final hash = item.toString();
+          if (hash.isNotEmpty) {
+            hashes[startHeight + i] = hash;
+          }
+        }
+      }
+    }
+    return hashes;
   }
 
   /// Get the block height where an anchor was valid.
@@ -892,7 +1019,8 @@ class PIVXSaplingElectrumX {
     int batchSize = 100,
     int parallelBatches = 5,
     required Future<void> Function(List<SaplingBlock> blocks) onBatch,
-    Future<void> Function(int rangeEnd)? onRangeComplete,
+    Future<void> Function(int rangeEnd, Map<int, String> blockHashes)?
+        onRangeComplete,
   }) async {
     // Server enforces max 100 blocks per request
     final effectiveBatchSize = batchSize.clamp(1, 100);
@@ -922,7 +1050,7 @@ class PIVXSaplingElectrumX {
         if (result.blocks.isNotEmpty) {
           await onBatch(result.blocks);
         }
-        await onRangeComplete?.call(result.endHeight);
+        await onRangeComplete?.call(result.endHeight, result.blockHashes);
       }
 
       currentStart += parallelBatches * effectiveBatchSize;
@@ -934,8 +1062,8 @@ class PIVXSaplingElectrumX {
       {int retries = 2}) async {
     for (int attempt = 0; attempt <= retries; attempt++) {
       try {
-        final blocks = await getBlockRange(start, endHeight: end);
-        return _BatchResult(blocks, end);
+        final result = await getBlockRangeResult(start, endHeight: end);
+        return _BatchResult(result.blocks, end, result.blockHashes);
       } catch (e) {
         if (attempt == retries) {
           throw SaplingRpcException(

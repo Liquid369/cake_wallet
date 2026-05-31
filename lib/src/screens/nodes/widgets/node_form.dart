@@ -25,28 +25,33 @@ class NodeForm extends StatefulWidget {
   final WalletType? type;
 
   @override
-  State<StatefulWidget> createState() =>
-      _NodeFormState(nodeViewModel: nodeViewModel, editingNode: this.editingNode);
+  State<StatefulWidget> createState() => _NodeFormState(
+      nodeViewModel: nodeViewModel, editingNode: this.editingNode);
 }
 
 class _NodeFormState extends State<NodeForm> {
   _NodeFormState({
     required this.nodeViewModel,
     Node? editingNode,
-  })  : _addressController = TextEditingController(text: editingNode?.uri.host.toString()),
-        _pathController = TextEditingController(text: editingNode?.path.toString()),
+  })  : _addressController =
+            TextEditingController(text: editingNode?.uri.host.toString()),
+        _pathController =
+            TextEditingController(text: editingNode?.path.toString()),
         _portController = TextEditingController(
             text: (editingNode != null && editingNode.uri.hasPort)
                 ? editingNode.uri.port.toString()
                 : ''),
         _loginController = TextEditingController(text: editingNode?.login),
-        _passwordController = TextEditingController(text: editingNode?.password),
-        _socksAddressController = TextEditingController(text: editingNode?.socksProxyAddress) {
+        _passwordController =
+            TextEditingController(text: editingNode?.password),
+        _socksAddressController =
+            TextEditingController(text: editingNode?.socksProxyAddress) {
     if (editingNode != null) {
       nodeViewModel
         ..setAddress(editingNode.uri.host.toString())
         ..setPath(editingNode.path.toString())
-        ..setPort(editingNode.uri.hasPort ? editingNode.uri.port.toString() : '')
+        ..setPort(
+            editingNode.uri.hasPort ? editingNode.uri.port.toString() : '')
         ..setPassword(editingNode.password ?? '')
         ..setLogin(editingNode.login ?? '')
         ..setSSL(editingNode.isSSL)
@@ -62,7 +67,8 @@ class _NodeFormState extends State<NodeForm> {
       });
 
       reaction((_) => nodeViewModel.password, (String password) {
-        if (password != _passwordController.text) _passwordController.text = password;
+        if (password != _passwordController.text)
+          _passwordController.text = password;
       });
     }
     reaction((_) => nodeViewModel.address, (String address) {
@@ -79,13 +85,18 @@ class _NodeFormState extends State<NodeForm> {
       if (path != _pathController.text) _pathController.text = path;
     });
 
-    _addressController.addListener(() => nodeViewModel.address = _addressController.text);
-    _pathController.addListener(() => nodeViewModel.path = _pathController.text);
-    _portController.addListener(() => nodeViewModel.port = _portController.text);
-    _loginController.addListener(() => nodeViewModel.login = _loginController.text);
-    _passwordController.addListener(() => nodeViewModel.password = _passwordController.text);
-    _socksAddressController
-        .addListener(() => nodeViewModel.socksProxyAddress = _socksAddressController.text);
+    _addressController
+        .addListener(() => nodeViewModel.address = _addressController.text);
+    _pathController
+        .addListener(() => nodeViewModel.path = _pathController.text);
+    _portController
+        .addListener(() => nodeViewModel.port = _portController.text);
+    _loginController
+        .addListener(() => nodeViewModel.login = _loginController.text);
+    _passwordController
+        .addListener(() => nodeViewModel.password = _passwordController.text);
+    _socksAddressController.addListener(
+        () => nodeViewModel.socksProxyAddress = _socksAddressController.text);
   }
 
   final NodeCreateOrEditViewModel nodeViewModel;
@@ -130,7 +141,8 @@ class _NodeFormState extends State<NodeForm> {
               child: BaseTextFormField(
                 controller: _portController,
                 hintText: S.of(context).node_port,
-                keyboardType: TextInputType.numberWithOptions(signed: false, decimal: false),
+                keyboardType: TextInputType.numberWithOptions(
+                    signed: false, decimal: false),
                 validator: NodePortValidator(),
               ),
             )
@@ -145,7 +157,8 @@ class _NodeFormState extends State<NodeForm> {
                 Observer(
                   builder: (_) => StandardCheckbox(
                     value: nodeViewModel.useSSL,
-                    borderColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    borderColor:
+                        Theme.of(context).colorScheme.surfaceContainerHighest,
                     iconColor: Theme.of(context).colorScheme.primary,
                     onChanged: (value) => nodeViewModel.useSSL = value,
                     caption: S.of(context).use_ssl,
@@ -164,9 +177,11 @@ class _NodeFormState extends State<NodeForm> {
                 Observer(
                   builder: (_) => StandardCheckbox(
                     value: nodeViewModel.isEnabledForAutoSwitching,
-                    borderColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    borderColor:
+                        Theme.of(context).colorScheme.surfaceContainerHighest,
                     iconColor: Theme.of(context).colorScheme.primary,
-                    onChanged: (value) => nodeViewModel.isEnabledForAutoSwitching = value,
+                    onChanged: (value) =>
+                        nodeViewModel.isEnabledForAutoSwitching = value,
                     caption: S.current.enable_for_auto_switching,
                   ),
                 ),
@@ -201,7 +216,8 @@ class _NodeFormState extends State<NodeForm> {
                   Observer(
                     builder: (_) => StandardCheckbox(
                       value: nodeViewModel.trusted,
-                      borderColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                      borderColor:
+                          Theme.of(context).colorScheme.surfaceContainerHighest,
                       iconColor: Theme.of(context).colorScheme.primary,
                       onChanged: (value) => nodeViewModel.trusted = value,
                       caption: S.of(context).trusted,
@@ -210,27 +226,10 @@ class _NodeFormState extends State<NodeForm> {
                 ],
               ),
             ),
-            Observer(
-              builder: (_) => Column(children: [
-                if (nodeViewModel.usesEmbeddedProxy) ...[
-                  Padding(
-                    padding: const EdgeInsets.only(top: 10),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.max,
-                      children: [
-                        StandardCheckbox(
-                          value: nodeViewModel.usesEmbeddedProxy,
-                          gradientBackground: false,
-                          borderColor: Theme.of(context).dividerColor,
-                          iconColor: Theme.of(context).colorScheme.primary,
-                          onChanged: null,
-                          caption: 'Embedded Tor SOCKS Proxy',
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+          ],
+          Observer(
+            builder: (_) => Column(children: [
+              if (nodeViewModel.usesEmbeddedProxy) ...[
                 Padding(
                   padding: const EdgeInsets.only(top: 10),
                   child: Row(
@@ -238,33 +237,51 @@ class _NodeFormState extends State<NodeForm> {
                     mainAxisSize: MainAxisSize.max,
                     children: [
                       StandardCheckbox(
-                        value: nodeViewModel.useSocksProxy,
-                        borderColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        value: nodeViewModel.usesEmbeddedProxy,
+                        gradientBackground: false,
+                        borderColor: Theme.of(context).dividerColor,
                         iconColor: Theme.of(context).colorScheme.primary,
-                        onChanged: (value) {
-                          if (!value) _socksAddressController.text = '';
-                          nodeViewModel.useSocksProxy = value;
-                        },
-                        caption: 'SOCKS Proxy',
+                        onChanged: null,
+                        caption: 'Embedded Tor SOCKS Proxy',
                       ),
                     ],
                   ),
                 ),
-                if (nodeViewModel.useSocksProxy) ...[
-                  const SizedBox(height: 10),
-                  Row(children: <Widget>[
-                    Expanded(
-                      child: BaseTextFormField(
-                        controller: _socksAddressController,
-                        hintText: '[<ip>:]<port>',
-                        validator: SocksProxyNodeAddressValidator(),
-                      ),
-                    )
-                  ]),
-                ]
-              ]),
-            ),
-          ]
+              ],
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.max,
+                  children: [
+                    StandardCheckbox(
+                      value: nodeViewModel.useSocksProxy,
+                      borderColor:
+                          Theme.of(context).colorScheme.surfaceContainerHighest,
+                      iconColor: Theme.of(context).colorScheme.primary,
+                      onChanged: (value) {
+                        if (!value) _socksAddressController.text = '';
+                        nodeViewModel.useSocksProxy = value;
+                      },
+                      caption: 'SOCKS Proxy',
+                    ),
+                  ],
+                ),
+              ),
+              if (nodeViewModel.useSocksProxy) ...[
+                const SizedBox(height: 10),
+                Row(children: <Widget>[
+                  Expanded(
+                    child: BaseTextFormField(
+                      controller: _socksAddressController,
+                      hintText: '[<ip>:]<port>',
+                      validator: SocksProxyNodeAddressValidator(),
+                    ),
+                  )
+                ]),
+              ]
+            ]),
+          ),
         ]),
       );
 }

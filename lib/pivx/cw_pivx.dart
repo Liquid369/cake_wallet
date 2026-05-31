@@ -66,13 +66,38 @@ class CWPivx extends Pivx {
   }
 
   @override
+  bool isShieldSyncing(Object wallet) {
+    final pivxWallet = wallet as PivxWallet;
+    return pivxWallet.isShieldSyncing;
+  }
+
+  @override
+  bool isSaplingRpcAvailable(Object wallet) {
+    final pivxWallet = wallet as PivxWallet;
+    return pivxWallet.saplingRpcAvailable;
+  }
+
+  @override
+  int getLastShieldSyncedBlock(Object wallet) {
+    final pivxWallet = wallet as PivxWallet;
+    return pivxWallet.lastShieldSyncedBlock;
+  }
+
+  @override
+  String? getLastShieldSyncError(Object wallet) {
+    final pivxWallet = wallet as PivxWallet;
+    return pivxWallet.lastShieldSyncError;
+  }
+
+  @override
   int getShieldedBalance(Object wallet) {
     final pivxWallet = wallet as PivxWallet;
     return pivxWallet.shieldedBalance;
   }
 
   @override
-  Future<String> generateNewShieldedAddress(Object wallet, {String? label}) async {
+  Future<String> generateNewShieldedAddress(Object wallet,
+      {String? label}) async {
     final pivxWallet = wallet as PivxWallet;
     return await pivxWallet.generateNewShieldedAddress(label: label);
   }
@@ -80,16 +105,19 @@ class CWPivx extends Pivx {
   @override
   List<Map<String, dynamic>> getShieldedAddresses(Object wallet) {
     final pivxWallet = wallet as PivxWallet;
-    return pivxWallet.shieldedAddresses.map((addr) => {
-      'address': addr.address,
-      'label': addr.label,
-      'diversifierIndex': addr.diversifierIndex,
-      'isDefault': addr.isDefault,
-    }).toList();
+    return pivxWallet.shieldedAddresses
+        .map((addr) => {
+              'address': addr.address,
+              'label': addr.label,
+              'diversifierIndex': addr.diversifierIndex,
+              'isDefault': addr.isDefault,
+            })
+        .toList();
   }
 
   @override
-  Future<void> updateShieldedAddressLabel(Object wallet, {required String address, required String label}) async {
+  Future<void> updateShieldedAddressLabel(Object wallet,
+      {required String address, required String label}) async {
     final pivxWallet = wallet as PivxWallet;
     await pivxWallet.updateShieldedAddressLabel(address, label);
   }

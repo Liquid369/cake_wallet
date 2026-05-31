@@ -5,24 +5,24 @@
 //!
 //! Function names use `cw_pivx_*` prefix for Cake Wallet compatibility.
 
+use group::GroupEncoding;
+use lazy_static::lazy_static;
 use std::ffi::{c_char, CStr, CString};
 use std::ptr;
 use std::slice;
-use lazy_static::lazy_static;
 use std::sync::Mutex;
-use group::GroupEncoding;
 
 use sapling::{
     keys::PreparedIncomingViewingKey,
     note::ExtractedNoteCommitment,
-    note_encryption::{SaplingDomain, try_sapling_note_decryption, Zip212Enforcement},
+    note_encryption::{try_sapling_note_decryption, SaplingDomain, Zip212Enforcement},
 };
 use zcash_note_encryption::{EphemeralKeyBytes, ShieldedOutput, ENC_CIPHERTEXT_SIZE};
 
-use crate::keys::{SaplingKeyManager, validate_address};
-use crate::types::Network;
-use crate::sync::SyncState;
+use crate::keys::{validate_address, SaplingKeyManager};
 use crate::notes::SpendableNote;
+use crate::sync::SyncState;
+use crate::types::Network;
 
 /// A simple output wrapper that implements ShieldedOutput for trial decryption.
 /// This allows us to trial decrypt outputs from raw bytes without needing
@@ -110,28 +110,26 @@ fn handle_to_index(handle: i64) -> Option<usize> {
 /// Macro to validate a handle and get the corresponding item from a Vec<Option<T>>.
 /// Returns with error_return if handle is invalid or out of bounds.
 macro_rules! get_from_handle {
-    ($handle:expr, $vec:expr, $error_return:expr, $item_name:expr) => {
-        {
-            let idx = match handle_to_index($handle) {
-                Some(i) => i,
-                None => {
-                    set_error(&format!("Invalid {}: must be non-negative", $item_name));
-                    return $error_return;
+    ($handle:expr, $vec:expr, $error_return:expr, $item_name:expr) => {{
+        let idx = match handle_to_index($handle) {
+            Some(i) => i,
+            None => {
+                set_error(&format!("Invalid {}: must be non-negative", $item_name));
+                return $error_return;
+            }
+        };
+        match $vec.get(idx).and_then(|item| item.as_ref()) {
+            Some(item) => item,
+            None => {
+                if idx >= $vec.len() {
+                    set_error(&format!("Invalid {}: out of range", $item_name));
+                } else {
+                    set_error(&format!("{} has been disposed", $item_name));
                 }
-            };
-            match $vec.get(idx).and_then(|item| item.as_ref()) {
-                Some(item) => item,
-                None => {
-                    if idx >= $vec.len() {
-                        set_error(&format!("Invalid {}: out of range", $item_name));
-                    } else {
-                        set_error(&format!("{} has been disposed", $item_name));
-                    }
-                    return $error_return;
-                }
+                return $error_return;
             }
         }
-    };
+    }};
 }
 
 /// Get and clear the last error message.
@@ -160,35 +158,17 @@ unsafe fn bytes_from_ffi_ptr<const N: usize>(
         return Err(format!("{} is null", param_name));
     }
     let slice = slice::from_raw_parts(ptr, N);
-    slice.try_into()
+    slice
+        .try_into()
         .map_err(|_| format!("{} size mismatch (expected {} bytes)", param_name, N))
 }
 
-/// Validate amount is within reasonable bounds.
-/// PIVX uses 8 decimal places. Max reasonable: 100 billion PIV = 10^19 zatoshis.
-/// This prevents overflow and unreasonable amounts.
-fn validate_amount(amount: u64, param_name: &str) -> Result<(), String> {
-    const MAX_REASONABLE: u64 = 10_000_000_000_000_000_000; // 100 billion PIV
-    const DUST_THRESHOLD: u64 = 10_000; // 0.0001 PIV
-    
-    if amount == 0 {
-        return Err(format!("{} cannot be zero", param_name));
-    }
-    if amount < DUST_THRESHOLD {
-        return Err(format!("{} is below dust threshold ({} zatoshis)", param_name, DUST_THRESHOLD));
-    }
-    if amount > MAX_REASONABLE {
-        return Err(format!("{} exceeds maximum reasonable amount", param_name));
-    }
-    Ok(())
-}
-
 /// Validate fee is reasonable.
-/// Fee should be at least 1000 zatoshis (0.00001 PIV) and at most 1 PIV.
+/// Fee should be at least 10,000 zatoshis (0.0001 PIV) and at most 1 PIV.
 fn validate_fee(fee: u64) -> Result<(), String> {
-    const MIN_FEE: u64 = 1_000; // 0.00001 PIV
+    const MIN_FEE: u64 = 10_000; // 0.0001 PIV
     const MAX_FEE: u64 = 100_000_000; // 1 PIV
-    
+
     if fee < MIN_FEE {
         return Err(format!("Fee too low (min {} zatoshis)", MIN_FEE));
     }
@@ -198,11 +178,40 @@ fn validate_fee(fee: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate a shielded output amount.
+///
+/// PIVX Core v5.6.1 computes shielded dust as:
+/// DEFAULT_SHIELDEDTXFEE_K * dustRelayFee.GetFee(SPENDDESCRIPTION_SIZE
+/// + CTXOUT_REGULAR_SIZE + BINDINGSIG_SIZE), which is 1,446,000 zatoshis.
+fn validate_shielded_amount(amount: u64, param_name: &str) -> Result<(), String> {
+    const MAX_REASONABLE: u64 = 10_000_000_000_000_000_000; // 100 billion PIV
+    const SHIELDED_DUST_THRESHOLD: u64 = 1_446_000;
+
+    if amount == 0 {
+        return Err(format!("{} cannot be zero", param_name));
+    }
+    if amount < SHIELDED_DUST_THRESHOLD {
+        return Err(format!(
+            "{} is below shielded dust threshold ({} zatoshis)",
+            param_name, SHIELDED_DUST_THRESHOLD
+        ));
+    }
+    if amount > MAX_REASONABLE {
+        return Err(format!("{} exceeds maximum reasonable amount", param_name));
+    }
+    Ok(())
+}
+
 /// Validate string length is within reasonable bounds.
 /// This prevents DoS attacks via extremely long strings.
 fn validate_string_length(s: &str, max_len: usize, param_name: &str) -> Result<(), String> {
     if s.len() > max_len {
-        return Err(format!("{} too long (max {} chars, got {})", param_name, max_len, s.len()));
+        return Err(format!(
+            "{} too long (max {} chars, got {})",
+            param_name,
+            max_len,
+            s.len()
+        ));
     }
     Ok(())
 }
@@ -261,32 +270,34 @@ pub extern "C" fn cw_pivx_free_buffer(buffer: FFIBuffer) {
 /// Initialize keys from a seed.
 /// Returns a handle for future operations, or -1 on error.
 #[no_mangle]
-pub extern "C" fn cw_pivx_init_keys(
-    seed: *const u8,
-    seed_len: usize,
-    is_testnet: u8,
-) -> i64 {
+pub extern "C" fn cw_pivx_init_keys(seed: *const u8, seed_len: usize, is_testnet: u8) -> i64 {
     if seed.is_null() || seed_len < 32 {
         set_error("Invalid seed");
         return -1;
     }
-    
+
     let seed_slice = unsafe { slice::from_raw_parts(seed, seed_len) };
-    let network = if is_testnet != 0 { Network::Testnet } else { Network::Mainnet };
-    
+    let network = if is_testnet != 0 {
+        Network::Testnet
+    } else {
+        Network::Mainnet
+    };
+
     match SaplingKeyManager::from_seed(seed_slice, network) {
         Ok(manager) => {
             let mut managers = lock_or_fail!(KEY_MANAGERS, -1);
-            
+
             // Find first available slot (reuse disposed handles) or create new
-            let id = managers.iter().position(|m| m.is_none())
+            let id = managers
+                .iter()
+                .position(|m| m.is_none())
                 .unwrap_or_else(|| {
                     managers.push(None);
                     managers.len() - 1
                 }) as i64;
-            
+
             managers[id as usize] = Some(manager);
-            
+
             // Also create a sync state at same index
             let mut states = lock_or_fail!(SYNC_STATES, -1);
             // Ensure states vec is large enough
@@ -294,7 +305,7 @@ pub extern "C" fn cw_pivx_init_keys(
                 states.push(None);
             }
             states[id as usize] = Some(SyncState::new());
-            
+
             id
         }
         Err(e) => {
@@ -314,7 +325,7 @@ pub extern "C" fn cw_pivx_dispose_keys(handle: i64) {
             return;
         }
     };
-    
+
     let mut managers = lock_or_fail!(KEY_MANAGERS, ());
     if idx < managers.len() {
         managers[idx] = None;
@@ -326,7 +337,7 @@ pub extern "C" fn cw_pivx_dispose_keys(handle: i64) {
 pub extern "C" fn cw_pivx_get_default_address(handle: i64) -> *mut c_char {
     let managers = lock_or_fail!(KEY_MANAGERS, ptr::null_mut());
     let manager = get_from_handle!(handle, managers, ptr::null_mut(), "key handle");
-    
+
     match manager.default_address() {
         Ok(addr) => {
             let encoded = manager.encode_payment_address(&addr);
@@ -346,12 +357,12 @@ pub extern "C" fn cw_pivx_get_default_address(handle: i64) -> *mut c_char {
 pub extern "C" fn cw_pivx_derive_address(handle: i64, index: u64) -> *mut c_char {
     let managers = lock_or_fail!(KEY_MANAGERS, ptr::null_mut());
     let idx = handle as usize;
-    
+
     if idx >= managers.len() {
         set_error("Invalid handle");
         return ptr::null_mut();
     }
-    
+
     let manager = match &managers[idx] {
         Some(m) => m,
         None => {
@@ -359,12 +370,12 @@ pub extern "C" fn cw_pivx_derive_address(handle: i64, index: u64) -> *mut c_char
             return ptr::null_mut();
         }
     };
-    
+
     // Convert index to DiversifierIndex
     let mut div_bytes = [0u8; 11];
     div_bytes[0..8].copy_from_slice(&(index as u64).to_le_bytes());
     let div_index = zcash_primitives::zip32::DiversifierIndex::from(div_bytes);
-    
+
     match manager.derive_address(div_index) {
         Ok(addr) => {
             let encoded = manager.encode_payment_address(&addr);
@@ -384,12 +395,12 @@ pub extern "C" fn cw_pivx_derive_address(handle: i64, index: u64) -> *mut c_char
 pub extern "C" fn cw_pivx_get_viewing_key(handle: i64) -> *mut c_char {
     let managers = lock_or_fail!(KEY_MANAGERS, ptr::null_mut());
     let idx = handle as usize;
-    
+
     if idx >= managers.len() {
         set_error("Invalid handle");
         return ptr::null_mut();
     }
-    
+
     let manager = match &managers[idx] {
         Some(m) => m,
         None => {
@@ -397,7 +408,7 @@ pub extern "C" fn cw_pivx_get_viewing_key(handle: i64) -> *mut c_char {
             return ptr::null_mut();
         }
     };
-    
+
     let encoded = manager.encode_full_viewing_key();
     CString::new(encoded)
         .expect("FVK encoding is valid: no null bytes")
@@ -410,17 +421,25 @@ pub extern "C" fn cw_pivx_validate_address(address: *const c_char, is_testnet: u
     if address.is_null() {
         return 0;
     }
-    
+
     let address_str = unsafe {
         match CStr::from_ptr(address).to_str() {
             Ok(s) => s,
             Err(_) => return 0,
         }
     };
-    
-    let network = if is_testnet != 0 { Network::Testnet } else { Network::Mainnet };
-    
-    if validate_address(address_str, network) { 1 } else { 0 }
+
+    let network = if is_testnet != 0 {
+        Network::Testnet
+    } else {
+        Network::Mainnet
+    };
+
+    if validate_address(address_str, network) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Initialize sync engine.
@@ -447,7 +466,7 @@ pub extern "C" fn cw_pivx_dispose_sync_engine(handle: i64) {
 pub extern "C" fn cw_pivx_get_sync_height(handle: i64) -> u32 {
     let states = lock_or_fail!(SYNC_STATES, 0);
     let idx = handle as usize;
-    
+
     match states.get(idx).and_then(|s| s.as_ref()) {
         Some(state) => state.sync_height(),
         None => 0,
@@ -459,7 +478,7 @@ pub extern "C" fn cw_pivx_get_sync_height(handle: i64) -> u32 {
 pub extern "C" fn cw_pivx_get_shielded_balance(handle: i64) -> u64 {
     let states = lock_or_fail!(SYNC_STATES, 0);
     let idx = handle as usize;
-    
+
     match states.get(idx).and_then(|s| s.as_ref()) {
         Some(state) => state.shielded_balance(),
         None => 0,
@@ -471,7 +490,7 @@ pub extern "C" fn cw_pivx_get_shielded_balance(handle: i64) -> u64 {
 pub extern "C" fn cw_pivx_get_unspent_note_count(handle: i64) -> usize {
     let states = lock_or_fail!(SYNC_STATES, 0);
     let idx = handle as usize;
-    
+
     match states.get(idx).and_then(|s| s.as_ref()) {
         Some(state) => state.unspent_notes().len(),
         None => 0,
@@ -483,18 +502,18 @@ pub extern "C" fn cw_pivx_get_unspent_note_count(handle: i64) -> usize {
 pub extern "C" fn cw_pivx_reset_sync(handle: i64) {
     let mut states = lock_or_fail!(SYNC_STATES, ());
     let idx = handle as usize;
-    
+
     if let Some(Some(state)) = states.get_mut(idx) {
         *state = SyncState::new();
     }
 }
 
 /// Try to decrypt a Sapling output and add to sync state if successful.
-/// 
+///
 /// This is the core function for detecting incoming shielded transactions.
 /// It attempts trial decryption of a Sapling output using the wallet's
 /// incoming viewing key.
-/// 
+///
 /// # Parameters
 /// * `key_handle` - Handle from cw_pivx_init_keys
 /// * `sync_handle` - Handle from cw_pivx_init_sync_engine  
@@ -505,7 +524,7 @@ pub extern "C" fn cw_pivx_reset_sync(handle: i64) {
 /// * `tx_index` - Transaction index in block
 /// * `output_index` - Output index in transaction
 /// * `position` - Position in commitment tree
-/// 
+///
 /// # Returns
 /// The note value in zatoshis if decryption succeeds, 0 otherwise.
 #[no_mangle]
@@ -525,7 +544,7 @@ pub extern "C" fn cw_pivx_try_decrypt_output(
         set_error("Null pointer provided");
         return 0;
     }
-    
+
     // Get key manager
     let managers = lock_or_fail!(KEY_MANAGERS, 0);
     let key_manager = match managers.get(key_handle as usize).and_then(|m| m.as_ref()) {
@@ -535,7 +554,7 @@ pub extern "C" fn cw_pivx_try_decrypt_output(
             return 0;
         }
     };
-    
+
     // Parse cmu (note commitment) - 32 bytes
     let cmu_bytes: [u8; 32] = match unsafe { bytes_from_ffi_ptr(cmu, "cmu") } {
         Ok(bytes) => bytes,
@@ -544,7 +563,7 @@ pub extern "C" fn cw_pivx_try_decrypt_output(
             return 0;
         }
     };
-    
+
     let cmu_extracted = match ExtractedNoteCommitment::from_bytes(&cmu_bytes).into_option() {
         Some(c) => c,
         None => {
@@ -552,7 +571,7 @@ pub extern "C" fn cw_pivx_try_decrypt_output(
             return 0; // Invalid commitment - this IS an error, not just "not for us"
         }
     };
-    
+
     // Parse epk (ephemeral public key) - 32 bytes
     let epk_bytes: [u8; 32] = match unsafe { bytes_from_ffi_ptr(epk, "epk") } {
         Ok(bytes) => bytes,
@@ -562,65 +581,55 @@ pub extern "C" fn cw_pivx_try_decrypt_output(
         }
     };
     let ephemeral_key = EphemeralKeyBytes(epk_bytes);
-    
+
     // Get encrypted ciphertext (580 bytes)
-    let enc_bytes: [u8; ENC_CIPHERTEXT_SIZE] = match unsafe { bytes_from_ffi_ptr(enc_ciphertext, "enc_ciphertext") } {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            set_error(&e);
-            return 0;
-        }
-    };
-    
+    let enc_bytes: [u8; ENC_CIPHERTEXT_SIZE] =
+        match unsafe { bytes_from_ffi_ptr(enc_ciphertext, "enc_ciphertext") } {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                set_error(&e);
+                return 0;
+            }
+        };
+
     // Create our trial decryption output
     let output = TrialDecryptionOutput {
         ephemeral_key,
         cmu: cmu_extracted,
         enc_ciphertext: enc_bytes,
     };
-    
+
     // Get the incoming viewing key from the key manager and prepare it
     let dfvk = key_manager.diversifiable_full_viewing_key();
     let ivk = dfvk.fvk().vk.ivk();
     let prepared_ivk = PreparedIncomingViewingKey::new(&ivk);
-    
+
     // PIVX does NOT enforce ZIP-212 (unlike Zcash post-Canopy)
     // librustpivx's zip212_enforcement() always returns Off for PIVX
     let zip212 = Zip212Enforcement::Off;
-    
+
     // Try trial decryption
-    let result = try_sapling_note_decryption(
-        &prepared_ivk,
-        &output,
-        zip212,
-    );
-    
+    let result = try_sapling_note_decryption(&prepared_ivk, &output, zip212);
+
     match result {
         Some((note, address, _memo)) => {
             // Success! We received this note.
             let value = note.value().inner();
-            
+
             // Compute nullifier for spending later
             let nf = note.nf(&dfvk.fvk().vk.nk, position);
-            
+
             // Create spendable note
-            let spendable_note = SpendableNote::new(
-                note,
-                address,
-                position,
-                nf,
-                height,
-                tx_index,
-                output_index,
-            );
-            
+            let spendable_note =
+                SpendableNote::new(note, address, position, nf, height, tx_index, output_index);
+
             // Add to sync state
             drop(managers); // Release lock before acquiring another
             let mut states = lock_or_fail!(SYNC_STATES, 0);
             if let Some(Some(state)) = states.get_mut(sync_handle as usize) {
                 let _ = state.add_note(spendable_note);
             }
-            
+
             value
         }
         None => {
@@ -631,31 +640,28 @@ pub extern "C" fn cw_pivx_try_decrypt_output(
 }
 
 /// Check if a nullifier matches any of our notes and mark them spent.
-/// 
+///
 /// # Parameters
 /// * `sync_handle` - Handle from cw_pivx_init_sync_engine
 /// * `nullifier` - 32-byte nullifier to check
-/// 
+///
 /// # Returns
 /// 1 if a note was marked spent, 0 otherwise.
 #[no_mangle]
-pub extern "C" fn cw_pivx_check_nullifier(
-    sync_handle: i64,
-    nullifier: *const u8,
-) -> u8 {
+pub extern "C" fn cw_pivx_check_nullifier(sync_handle: i64, nullifier: *const u8) -> u8 {
     if nullifier.is_null() {
         return 0;
     }
-    
+
     let nf_bytes: [u8; 32] = unsafe { slice::from_raw_parts(nullifier, 32) }
         .try_into()
         .unwrap_or([0u8; 32]);
-    
+
     let nf = match sapling::Nullifier::from_slice(&nf_bytes) {
         Ok(n) => n,
         Err(_) => return 0,
     };
-    
+
     let mut states = lock_or_fail!(SYNC_STATES, 0);
     if let Some(Some(state)) = states.get_mut(sync_handle as usize) {
         if state.is_nullifier_spent(&nf) {
@@ -664,7 +670,7 @@ pub extern "C" fn cw_pivx_check_nullifier(
         state.add_spent_nullifier(nf);
         return 1;
     }
-    
+
     0
 }
 
@@ -686,32 +692,42 @@ pub extern "C" fn cw_pivx_estimate_fee(
     t_inputs: usize,
     t_outputs: usize,
 ) -> u64 {
-    // PIVX fee calculation with overflow protection:
-    // Base fee + per-input/output fees
-    const BASE_FEE: u64 = 10_000; // 0.0001 PIVX
-    const PER_SPEND: u64 = 10_000;
-    const PER_OUTPUT: u64 = 5_000;
-    const PER_TRANSPARENT: u64 = 2_000;
-    
+    // PIVX Core shielded relay policy: size * 10,000 zatoshis/kB * 100, rounded up.
+    const MIN_RELAY_FEE_PER_KB: u64 = 10_000;
+    const SHIELDED_FEE_FACTOR: u64 = 100;
+    const MIN_FEE: u64 = 10_000;
+    const SAPLING_SPEND_SIZE: u64 = 384;
+    const SAPLING_OUTPUT_SIZE: u64 = 948;
+    const TRANSPARENT_INPUT_SIZE: u64 = 148;
+    const TRANSPARENT_OUTPUT_SIZE: u64 = 34;
+    const SAPLING_TX_OVERHEAD_SIZE: u64 = 85;
+
     // Validate inputs are in reasonable range (prevent overflow attacks)
     const MAX_INPUTS: usize = 10_000;
-    if spends > MAX_INPUTS || outputs > MAX_INPUTS || 
-       t_inputs > MAX_INPUTS || t_outputs > MAX_INPUTS {
+    if spends > MAX_INPUTS
+        || outputs > MAX_INPUTS
+        || t_inputs > MAX_INPUTS
+        || t_outputs > MAX_INPUTS
+    {
         set_error("Too many inputs/outputs for fee calculation");
         return u64::MAX; // Signal error with saturated value
     }
-    
-    // Use checked arithmetic to prevent overflow
-    let spend_fee = (spends as u64).checked_mul(PER_SPEND);
-    let output_fee = (outputs as u64).checked_mul(PER_OUTPUT);
-    let transparent_fee = ((t_inputs + t_outputs) as u64).checked_mul(PER_TRANSPARENT);
-    
-    match (spend_fee, output_fee, transparent_fee) {
-        (Some(s), Some(o), Some(t)) => {
-            // Now sum with saturation (safer than checked_add which can still fail)
-            BASE_FEE.saturating_add(s).saturating_add(o).saturating_add(t)
+
+    let size = SAPLING_TX_OVERHEAD_SIZE
+        .checked_add((spends as u64).saturating_mul(SAPLING_SPEND_SIZE))
+        .and_then(|v| v.checked_add((outputs as u64).saturating_mul(SAPLING_OUTPUT_SIZE)))
+        .and_then(|v| v.checked_add((t_inputs as u64).saturating_mul(TRANSPARENT_INPUT_SIZE)))
+        .and_then(|v| v.checked_add((t_outputs as u64).saturating_mul(TRANSPARENT_OUTPUT_SIZE)));
+
+    match size
+        .and_then(|s| s.checked_mul(MIN_RELAY_FEE_PER_KB))
+        .and_then(|s| s.checked_mul(SHIELDED_FEE_FACTOR))
+    {
+        Some(weighted_size) => {
+            let fee = weighted_size.saturating_add(999) / 1000;
+            fee.max(MIN_FEE)
         }
-        _ => {
+        None => {
             set_error("Fee calculation overflow");
             u64::MAX
         }
@@ -724,19 +740,15 @@ pub extern "C" fn cw_pivx_has_proving_params(path: *const c_char) -> u8 {
     if path.is_null() {
         return 0;
     }
-    
+
     let path_str = unsafe {
         match CStr::from_ptr(path).to_str() {
             Ok(s) => s,
             Err(_) => return 0,
         }
     };
-    
-    // Check if the spend and output params files exist
-    let spend_path = format!("{}/sapling-spend.params", path_str);
-    let output_path = format!("{}/sapling-output.params", path_str);
-    
-    if std::path::Path::new(&spend_path).exists() && std::path::Path::new(&output_path).exists() {
+
+    if crate::prover::has_proving_params(path_str) {
         1
     } else {
         0
@@ -744,13 +756,13 @@ pub extern "C" fn cw_pivx_has_proving_params(path: *const c_char) -> u8 {
 }
 
 /// Initialize the Groth16 prover with the proving parameters.
-/// 
+///
 /// This loads the ~50MB proving parameter files into memory.
 /// Should be called once before any transaction building.
-/// 
+///
 /// # Parameters
 /// * `params_dir` - Path to directory containing sapling-spend.params and sapling-output.params
-/// 
+///
 /// # Returns
 /// 0 on success, negative on error
 #[no_mangle]
@@ -759,7 +771,7 @@ pub extern "C" fn cw_pivx_init_prover(params_dir: *const c_char) -> i32 {
         set_error("Null params directory");
         return -1;
     }
-    
+
     let dir_str = unsafe {
         match CStr::from_ptr(params_dir).to_str() {
             Ok(s) => s,
@@ -769,7 +781,7 @@ pub extern "C" fn cw_pivx_init_prover(params_dir: *const c_char) -> i32 {
             }
         }
     };
-    
+
     match crate::prover::init_prover(dir_str) {
         Ok(()) => 0,
         Err(e) => {
@@ -782,7 +794,11 @@ pub extern "C" fn cw_pivx_init_prover(params_dir: *const c_char) -> i32 {
 /// Check if the prover is initialized.
 #[no_mangle]
 pub extern "C" fn cw_pivx_is_prover_initialized() -> u8 {
-    if crate::prover::is_prover_initialized() { 1 } else { 0 }
+    if crate::prover::is_prover_initialized() {
+        1
+    } else {
+        0
+    }
 }
 
 /// Free the prover and release memory (~50MB).
@@ -792,20 +808,20 @@ pub extern "C" fn cw_pivx_dispose_prover() {
 }
 
 /// Get all spendable notes from the sync state as JSON.
-/// 
+///
 /// Returns a JSON array of note objects, each containing all data
 /// needed for transaction building including the rseed and diversifier.
-/// 
+///
 /// # Parameters
 /// * `sync_handle` - Handle from cw_pivx_init_sync_engine
-/// 
+///
 /// # Returns
 /// JSON string with note data, or null on error.
 /// Caller must free with cw_pivx_free_string.
 #[no_mangle]
 pub extern "C" fn cw_pivx_get_spendable_notes(sync_handle: i64) -> *mut c_char {
     let states = lock_or_fail!(SYNC_STATES, ptr::null_mut());
-    
+
     let sync_state = match states.get(sync_handle as usize).and_then(|s| s.as_ref()) {
         Some(s) => s,
         None => {
@@ -813,64 +829,67 @@ pub extern "C" fn cw_pivx_get_spendable_notes(sync_handle: i64) -> *mut c_char {
             return ptr::null_mut();
         }
     };
-    
+
     // Get unspent notes
     let notes = sync_state.unspent_notes();
-    
+
     // Build JSON array
-    let notes_json: Vec<serde_json::Value> = notes.iter().map(|note| {
-        // Get the raw note components for serialization
-        // For BeforeZip212, rseed is an Fr scalar (32 bytes)
-        // For AfterZip212, rseed is raw [u8; 32]
-        let rseed_bytes = match note.note.rseed() {
-            sapling::Rseed::BeforeZip212(fr_value) => {
-                // Convert Fr to bytes using to_bytes() if available, or serialize
-                // The Fr type from jubjub should have to_bytes() 
-                hex::encode(fr_value.to_bytes())
-            },
-            sapling::Rseed::AfterZip212(bytes) => hex::encode(bytes),
-        };
-        
-        // Get recipient address bytes
-        let recipient = note.note.recipient();
-        let addr_bytes = recipient.to_bytes();
-        
-        // Get diversifier
-        let diversifier_bytes = recipient.diversifier().0;
-        
-        // Compute note commitment (cmu) for witness fetching
-        // This is the hash of the note that goes into the commitment tree
-        let cmu = note.note.cmu();
-        let cmu_bytes = cmu.to_bytes();
-        
-        // Get pk_d (diversified transmission key) for note reconstruction
-        // Use inner() to get the jubjub point, then serialize it
-        let pk_d = recipient.pk_d();
-        let pk_d_bytes = pk_d.inner().to_bytes();
-        
-        // For rcm, we use rseed in BeforeZip212 mode (PIVX)
-        // In this mode, rcm == rseed
-        let rcm_bytes = match note.note.rseed() {
-            sapling::Rseed::BeforeZip212(fr_value) => hex::encode(fr_value.to_bytes()),
-            sapling::Rseed::AfterZip212(bytes) => hex::encode(bytes),
-        };
-        
-        serde_json::json!({
-            "value": note.value(),
-            "position": note.position,
-            "height": note.height,
-            "tx_index": note.tx_index,
-            "output_index": note.output_index,
-            "nullifier": hex::encode(note.nullifier.0),
-            "rseed": rseed_bytes,
-            "rcm": rcm_bytes,
-            "address": hex::encode(addr_bytes),
-            "diversifier": hex::encode(diversifier_bytes),
-            "pk_d": hex::encode(pk_d_bytes),
-            "cmu": hex::encode(cmu_bytes),
+    let notes_json: Vec<serde_json::Value> = notes
+        .iter()
+        .map(|note| {
+            // Get the raw note components for serialization
+            // For BeforeZip212, rseed is an Fr scalar (32 bytes)
+            // For AfterZip212, rseed is raw [u8; 32]
+            let rseed_bytes = match note.note.rseed() {
+                sapling::Rseed::BeforeZip212(fr_value) => {
+                    // Convert Fr to bytes using to_bytes() if available, or serialize
+                    // The Fr type from jubjub should have to_bytes()
+                    hex::encode(fr_value.to_bytes())
+                }
+                sapling::Rseed::AfterZip212(bytes) => hex::encode(bytes),
+            };
+
+            // Get recipient address bytes
+            let recipient = note.note.recipient();
+            let addr_bytes = recipient.to_bytes();
+
+            // Get diversifier
+            let diversifier_bytes = recipient.diversifier().0;
+
+            // Compute note commitment (cmu) for witness fetching
+            // This is the hash of the note that goes into the commitment tree
+            let cmu = note.note.cmu();
+            let cmu_bytes = cmu.to_bytes();
+
+            // Get pk_d (diversified transmission key) for note reconstruction
+            // Use inner() to get the jubjub point, then serialize it
+            let pk_d = recipient.pk_d();
+            let pk_d_bytes = pk_d.inner().to_bytes();
+
+            // For rcm, we use rseed in BeforeZip212 mode (PIVX)
+            // In this mode, rcm == rseed
+            let rcm_bytes = match note.note.rseed() {
+                sapling::Rseed::BeforeZip212(fr_value) => hex::encode(fr_value.to_bytes()),
+                sapling::Rseed::AfterZip212(bytes) => hex::encode(bytes),
+            };
+
+            serde_json::json!({
+                "value": note.value(),
+                "position": note.position,
+                "height": note.height,
+                "tx_index": note.tx_index,
+                "output_index": note.output_index,
+                "nullifier": hex::encode(note.nullifier.0),
+                "rseed": rseed_bytes,
+                "rcm": rcm_bytes,
+                "address": hex::encode(addr_bytes),
+                "diversifier": hex::encode(diversifier_bytes),
+                "pk_d": hex::encode(pk_d_bytes),
+                "cmu": hex::encode(cmu_bytes),
+            })
         })
-    }).collect();
-    
+        .collect();
+
     let json_str = serde_json::to_string(&notes_json).unwrap_or_else(|_| "[]".to_string());
     CString::new(json_str)
         .expect("JSON string is valid: no null bytes")
@@ -878,15 +897,15 @@ pub extern "C" fn cw_pivx_get_spendable_notes(sync_handle: i64) -> *mut c_char {
 }
 
 /// Restore a note from JSON data.
-/// 
+///
 /// This allows restoring notes from persistent storage after app restart.
 /// The JSON should contain the same fields returned by cw_pivx_get_spendable_notes.
-/// 
+///
 /// # Parameters
 /// * `key_handle` - Handle from cw_pivx_init_keys  
 /// * `sync_handle` - Handle from cw_pivx_init_sync_engine
 /// * `note_json` - JSON string with note data
-/// 
+///
 /// # Returns
 /// 1 on success, 0 on failure
 #[no_mangle]
@@ -899,7 +918,7 @@ pub extern "C" fn cw_pivx_restore_note(
         set_error("Null note JSON");
         return 0;
     }
-    
+
     let json_str = match unsafe { CStr::from_ptr(note_json).to_str() } {
         Ok(s) => s,
         Err(_) => {
@@ -907,7 +926,7 @@ pub extern "C" fn cw_pivx_restore_note(
             return 0;
         }
     };
-    
+
     // Parse JSON
     let note_data: serde_json::Value = match serde_json::from_str(json_str) {
         Ok(v) => v,
@@ -916,53 +935,59 @@ pub extern "C" fn cw_pivx_restore_note(
             return 0;
         }
     };
-    
+
     // Extract fields
     let value = note_data["value"].as_u64().unwrap_or(0);
     let position = note_data["position"].as_u64().unwrap_or(0);
     let height = note_data["height"].as_u64().unwrap_or(0) as u32;
     let tx_index = note_data["tx_index"].as_u64().unwrap_or(0) as u32;
     let output_index = note_data["output_index"].as_u64().unwrap_or(0) as u32;
-    
+
     // Get hex-encoded fields
     let rseed_hex = note_data["rseed"].as_str().unwrap_or("");
     let address_hex = note_data["address"].as_str().unwrap_or("");
     let nullifier_hex = note_data["nullifier"].as_str().unwrap_or("");
-    
+
     // Parse rseed (32 bytes Fr scalar for BeforeZip212)
     let rseed_bytes: [u8; 32] = match hex::decode(rseed_hex) {
-        Ok(bytes) if bytes.len() == 32 => bytes.try_into()
+        Ok(bytes) if bytes.len() == 32 => bytes
+            .try_into()
             .expect("Length checked: rseed is exactly 32 bytes"),
         _ => {
             set_error("Invalid rseed");
             return 0;
         }
     };
-    
+
     // Parse address (43 bytes - 11 byte diversifier + 32 byte pk_d)
     let address_bytes: [u8; 43] = match hex::decode(address_hex) {
-        Ok(bytes) if bytes.len() == 43 => bytes.try_into()
+        Ok(bytes) if bytes.len() == 43 => bytes
+            .try_into()
             .expect("Length checked: address is exactly 43 bytes"),
         _ => {
-            set_error(&format!("Invalid address: expected 43 bytes, got {} from '{}'", 
-                hex::decode(address_hex).map(|b| b.len()).unwrap_or(0), address_hex));
+            set_error(&format!(
+                "Invalid address: expected 43 bytes, got {} from '{}'",
+                hex::decode(address_hex).map(|b| b.len()).unwrap_or(0),
+                address_hex
+            ));
             return 0;
         }
     };
-    
+
     // Parse nullifier (32 bytes)
     let nullifier_bytes: [u8; 32] = match hex::decode(nullifier_hex) {
-        Ok(bytes) if bytes.len() == 32 => bytes.try_into()
+        Ok(bytes) if bytes.len() == 32 => bytes
+            .try_into()
             .expect("Length checked: nullifier is exactly 32 bytes"),
         _ => {
             set_error("Invalid nullifier");
             return 0;
         }
     };
-    
+
     // Reconstruct the note components
-    use sapling::{PaymentAddress, Rseed, value::NoteValue};
-    
+    use sapling::{value::NoteValue, PaymentAddress, Rseed};
+
     // Parse payment address from bytes (includes diversifier + pk_d)
     let address = match PaymentAddress::from_bytes(&address_bytes) {
         Some(a) => a,
@@ -971,7 +996,7 @@ pub extern "C" fn cw_pivx_restore_note(
             return 0;
         }
     };
-    
+
     // Create rseed - PIVX uses BeforeZip212
     let rseed_fr = match jubjub::Fr::from_bytes(&rseed_bytes).into_option() {
         Some(fr) => fr,
@@ -981,17 +1006,13 @@ pub extern "C" fn cw_pivx_restore_note(
         }
     };
     let rseed = Rseed::BeforeZip212(rseed_fr);
-    
+
     // Create the note
-    let note = sapling::Note::from_parts(
-        address,
-        NoteValue::from_raw(value),
-        rseed,
-    );
-    
+    let note = sapling::Note::from_parts(address, NoteValue::from_raw(value), rseed);
+
     // Create nullifier
     let nullifier = sapling::Nullifier(nullifier_bytes);
-    
+
     // Create spendable note
     let spendable_note = SpendableNote::new(
         note,
@@ -1002,7 +1023,7 @@ pub extern "C" fn cw_pivx_restore_note(
         tx_index,
         output_index,
     );
-    
+
     // Add to sync state
     let mut states = lock_or_fail!(SYNC_STATES, -1);
     if let Some(Some(state)) = states.get_mut(sync_handle as usize) {
@@ -1026,13 +1047,16 @@ pub extern "C" fn cw_pivx_create_transaction(
     height: u32,
     proving_params_path: *const c_char,
 ) -> FFIBuffer {
-    let empty_result = FFIBuffer { data: ptr::null_mut(), len: 0 };
-    
+    let empty_result = FFIBuffer {
+        data: ptr::null_mut(),
+        len: 0,
+    };
+
     if to_address.is_null() || proving_params_path.is_null() {
         set_error("Invalid parameters");
         return empty_result;
     }
-    
+
     let _to_str = unsafe {
         match CStr::from_ptr(to_address).to_str() {
             Ok(s) => s,
@@ -1042,7 +1066,7 @@ pub extern "C" fn cw_pivx_create_transaction(
             }
         }
     };
-    
+
     let _memo_str = if memo.is_null() {
         None
     } else {
@@ -1053,7 +1077,7 @@ pub extern "C" fn cw_pivx_create_transaction(
             }
         }
     };
-    
+
     let _params_path = unsafe {
         match CStr::from_ptr(proving_params_path).to_str() {
             Ok(s) => s,
@@ -1063,11 +1087,11 @@ pub extern "C" fn cw_pivx_create_transaction(
             }
         }
     };
-    
+
     // Get key manager and sync state
     let managers = lock_or_fail!(KEY_MANAGERS, empty_result);
     let states = lock_or_fail!(SYNC_STATES, empty_result);
-    
+
     let _key_manager = match managers.get(key_handle as usize).and_then(|m| m.as_ref()) {
         Some(m) => m,
         None => {
@@ -1075,7 +1099,7 @@ pub extern "C" fn cw_pivx_create_transaction(
             return empty_result;
         }
     };
-    
+
     let _sync_state = match states.get(sync_handle as usize).and_then(|s| s.as_ref()) {
         Some(s) => s,
         None => {
@@ -1083,7 +1107,7 @@ pub extern "C" fn cw_pivx_create_transaction(
             return empty_result;
         }
     };
-    
+
     // Transaction building requires:
     // 1. Note selection from sync state
     // 2. Witness generation
@@ -1094,7 +1118,7 @@ pub extern "C" fn cw_pivx_create_transaction(
     // - Loading proving parameters from files
     // - Creating Groth16 proofs
     // - Building complete PIVX Sapling transaction
-    
+
     // For now, return an error indicating not yet implemented
     set_error(&format!(
         "Transaction building not yet fully implemented. Amount: {}, Height: {}",
@@ -1104,10 +1128,10 @@ pub extern "C" fn cw_pivx_create_transaction(
 }
 
 /// Build a shielded transaction with explicit note and witness data.
-/// 
+///
 /// This is the more complete transaction building function that accepts
 /// pre-computed witnesses from the caller (typically fetched from ElectrumX).
-/// 
+///
 /// # Parameters
 /// * `key_handle` - Handle from cw_pivx_init_keys
 /// * `notes_json` - JSON array of spendable notes with witnesses
@@ -1116,7 +1140,7 @@ pub extern "C" fn cw_pivx_create_transaction(
 /// * `memo` - Optional memo (512 bytes max, null for none)
 /// * `fee` - Fee in zatoshis
 /// * `anchor_hex` - Current anchor (merkle root) as 32-byte hex
-/// 
+///
 /// # Returns
 /// FFIBuffer containing JSON with txid and tx_hex, or empty on error
 #[no_mangle]
@@ -1129,16 +1153,19 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
     fee: u64,
     anchor_hex: *const c_char,
 ) -> FFIBuffer {
-    let empty_result = FFIBuffer { data: ptr::null_mut(), len: 0 };
-    
+    let empty_result = FFIBuffer {
+        data: ptr::null_mut(),
+        len: 0,
+    };
+
     // Validate inputs
     if notes_json.is_null() || to_address.is_null() || anchor_hex.is_null() {
         set_error("Null parameter provided");
         return empty_result;
     }
-    
+
     // Validate amount and fee ranges
-    if let Err(e) = validate_amount(amount, "amount") {
+    if let Err(e) = validate_shielded_amount(amount, "amount") {
         set_error(&e);
         return empty_result;
     }
@@ -1146,13 +1173,13 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
         set_error(&e);
         return empty_result;
     }
-    
+
     // Check prover is initialized
     if !crate::prover::is_prover_initialized() {
         set_error("Prover not initialized. Call cw_pivx_init_prover first.");
         return empty_result;
     }
-    
+
     // Parse string parameters
     let notes_str = unsafe {
         match CStr::from_ptr(notes_json).to_str() {
@@ -1163,7 +1190,7 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
             }
         }
     };
-    
+
     let to_str = unsafe {
         match CStr::from_ptr(to_address).to_str() {
             Ok(s) => s,
@@ -1173,7 +1200,7 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
             }
         }
     };
-    
+
     let anchor_str = unsafe {
         match CStr::from_ptr(anchor_hex).to_str() {
             Ok(s) => s,
@@ -1183,7 +1210,7 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
             }
         }
     };
-    
+
     let memo_str = if memo.is_null() {
         None
     } else {
@@ -1194,13 +1221,13 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
             }
         }
     };
-    
+
     // Validate memo length
     if let Err(e) = validate_memo(memo_str.as_deref()) {
         set_error(&e);
         return empty_result;
     }
-    
+
     // Validate string lengths to prevent DoS
     if let Err(e) = validate_string_length(notes_str, 1_000_000, "notes_json") {
         set_error(&e);
@@ -1214,7 +1241,7 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
         set_error(&e);
         return empty_result;
     }
-    
+
     // Get key manager
     let managers = lock_or_fail!(KEY_MANAGERS, empty_result);
     let key_manager = match managers.get(key_handle as usize).and_then(|m| m.as_ref()) {
@@ -1224,7 +1251,7 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
             return empty_result;
         }
     };
-    
+
     // Parse notes JSON
     let notes_data: Vec<crate::types::SpendableNoteData> = match serde_json::from_str(notes_str) {
         Ok(n) => n,
@@ -1233,12 +1260,12 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
             return empty_result;
         }
     };
-    
+
     if notes_data.is_empty() {
         set_error("No notes provided");
         return empty_result;
     }
-    
+
     // Validate we have enough balance
     let total_input: u64 = notes_data.iter().map(|n| n.value).sum();
     if total_input < amount + fee {
@@ -1248,7 +1275,7 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
         ));
         return empty_result;
     }
-    
+
     // Parse destination address
     let recipient = match key_manager.decode_payment_address(to_str) {
         Ok(addr) => addr,
@@ -1257,17 +1284,18 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
             return empty_result;
         }
     };
-    
+
     // Parse anchor
     let anchor_bytes: [u8; 32] = match hex::decode(anchor_str) {
-        Ok(bytes) if bytes.len() == 32 => bytes.try_into()
+        Ok(bytes) if bytes.len() == 32 => bytes
+            .try_into()
             .expect("Length checked: anchor is exactly 32 bytes"),
         _ => {
             set_error("Invalid anchor: must be 32-byte hex");
             return empty_result;
         }
     };
-    
+
     // Parse the anchor into a sapling Anchor
     let anchor = match sapling::Anchor::from_bytes(anchor_bytes).into_option() {
         Some(a) => a,
@@ -1276,11 +1304,11 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
             return empty_result;
         }
     };
-    
+
     // Reconstruct notes and merkle paths from the JSON data
     let mut spendable_notes = Vec::with_capacity(notes_data.len());
     let mut merkle_paths = Vec::with_capacity(notes_data.len());
-    
+
     for (idx, note_data) in notes_data.iter().enumerate() {
         // Reconstruct the Note
         let (note, address) = match crate::notes::note_from_parts(
@@ -1295,10 +1323,11 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
                 return empty_result;
             }
         };
-        
+
         // Parse the nullifier
         let nullifier_bytes: [u8; 32] = match hex::decode(&note_data.nullifier) {
-            Ok(bytes) if bytes.len() == 32 => bytes.try_into()
+            Ok(bytes) if bytes.len() == 32 => bytes
+                .try_into()
                 .expect("Length checked: nullifier is exactly 32 bytes"),
             _ => {
                 set_error(&format!("Invalid nullifier for note {}", idx));
@@ -1306,20 +1335,17 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
             }
         };
         let nullifier = sapling::Nullifier(nullifier_bytes);
-        
+
         // Create SpendableNote with position from witness data
         let position = note_data.witness_position;
         let spendable = crate::notes::SpendableNote::new(
-            note,
-            address,
-            position, // Use witness_position from ElectrumX response
-            nullifier,
-            0, // height - not critical for spending
+            note, address, position, // Use witness_position from ElectrumX response
+            nullifier, 0, // height - not critical for spending
             0, // tx_index
-            0, // output_index  
+            0, // output_index
         );
         spendable_notes.push(spendable);
-        
+
         // Parse merkle path from witness
         // The witness field contains the path elements (32-byte hashes concatenated)
         // Position is now passed separately from the witness_position field
@@ -1332,7 +1358,7 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
         };
         merkle_paths.push(path);
     }
-    
+
     // Parse memo if provided
     let memo_bytes: Option<[u8; 512]> = memo_str.as_ref().map(|m| {
         let mut bytes = [0u8; 512];
@@ -1341,25 +1367,19 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
         bytes[..len].copy_from_slice(&m_bytes[..len]);
         bytes
     });
-    
+
     // Build the outputs list
     let outputs = vec![(recipient, amount, memo_bytes)];
-    
+
     // Create transaction builder
     let tx_builder = crate::transaction::TransactionBuilder::new(
         key_manager.extended_spending_key().clone(),
         key_manager.diversifiable_full_viewing_key().clone(),
         key_manager.network() == crate::types::Network::Testnet,
     );
-    
+
     // Build the transaction
-    match tx_builder.build_transaction(
-        spendable_notes,
-        merkle_paths,
-        anchor,
-        outputs,
-        fee,
-    ) {
+    match tx_builder.build_transaction(spendable_notes, merkle_paths, anchor, outputs, fee) {
         Ok(built_tx) => {
             // Success! Return the transaction
             let result = serde_json::json!({
@@ -1368,10 +1388,10 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
                 "tx_hex": hex::encode(&built_tx.raw_tx),
                 "fee": built_tx.fee,
             });
-            
+
             let result_str = result.to_string();
             let result_bytes = result_str.as_bytes();
-            
+
             let data = unsafe {
                 let ptr = libc::malloc(result_bytes.len()) as *mut u8;
                 if ptr.is_null() {
@@ -1381,7 +1401,7 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
                 ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, result_bytes.len());
                 ptr
             };
-            
+
             FFIBuffer {
                 data,
                 len: result_bytes.len(),
@@ -1397,10 +1417,10 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
                 "amount": amount,
                 "fee": fee,
             });
-            
+
             let result_str = result.to_string();
             let result_bytes = result_str.as_bytes();
-            
+
             let data = unsafe {
                 let ptr = libc::malloc(result_bytes.len()) as *mut u8;
                 if ptr.is_null() {
@@ -1410,16 +1430,16 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
                 ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, result_bytes.len());
                 ptr
             };
-            
+
             FFIBuffer {
                 data,
                 len: result_bytes.len(),
             }
         }
     }
-}// ============================================================================
-// Legacy function names for backward compatibility
-// ============================================================================
+} // ============================================================================
+  // Legacy function names for backward compatibility
+  // ============================================================================
 
 #[no_mangle]
 pub extern "C" fn pivx_sapling_init() -> i32 {
@@ -1461,68 +1481,65 @@ pub extern "C" fn pivx_sapling_get_sync_height(session_id: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_ffi_init_keys() {
         let seed = [0u8; 64];
-        
+
         let handle = cw_pivx_init_keys(seed.as_ptr(), seed.len(), 0);
         assert!(handle >= 0);
-        
+
         cw_pivx_dispose_keys(handle);
     }
-    
+
     #[test]
     fn test_ffi_get_address() {
         let seed = [1u8; 64];
-        
+
         let handle = cw_pivx_init_keys(seed.as_ptr(), seed.len(), 0);
         assert!(handle >= 0);
-        
+
         let address_ptr = cw_pivx_get_default_address(handle);
         assert!(!address_ptr.is_null());
-        
-        let address = unsafe { CStr::from_ptr(address_ptr) }
-            .to_str()
-            .unwrap();
-        
+
+        let address = unsafe { CStr::from_ptr(address_ptr) }.to_str().unwrap();
+
         assert!(address.starts_with("ps"));
-        
+
         cw_pivx_free_string(address_ptr);
         cw_pivx_dispose_keys(handle);
     }
-    
+
     #[test]
     fn test_ffi_validate_address() {
         let valid = "ps1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqf0vjel";
-        let valid_ptr = CString::new(valid)
-            .expect("Test string is valid: no null bytes");
-        
+        let valid_ptr = CString::new(valid).expect("Test string is valid: no null bytes");
+
         // This will fail validation because it's a dummy address, but the FFI call should work
         let _result = cw_pivx_validate_address(valid_ptr.as_ptr(), 0);
         // Address validation is tested in keys.rs
     }
-    
+
     #[test]
     fn test_ffi_estimate_fee() {
         let fee = cw_pivx_estimate_fee(2, 2, 1, 1);
-        assert!(fee > 0);
+        assert_eq!(fee, 2_931_000);
     }
-    
+
     #[test]
     fn test_ffi_sync_engine() {
         let handle = cw_pivx_init_sync_engine(0);
         assert!(handle >= 0);
-        
+
         let height = cw_pivx_get_sync_height(handle);
         assert_eq!(height, 0); // Fresh sync state
-        
+
         let balance = cw_pivx_get_shielded_balance(handle);
         assert_eq!(balance, 0);
-        
+
         let count = cw_pivx_get_unspent_note_count(handle);
         assert_eq!(count, 0);
-        
+
         cw_pivx_dispose_sync_engine(handle);
     }
 }

@@ -76,13 +76,20 @@ echo -e "${YELLOW}Building for x86...${NC}"
 cargo ndk -t x86 -o "$OUTPUT_DIR" build --release
 
 # Rename libraries to match expected names
+missing_arch=false
 for arch in arm64-v8a armeabi-v7a x86_64 x86; do
-    if [ -f "$OUTPUT_DIR/$arch/lib${LIB_NAME}.so" ]; then
+    if [ -s "$OUTPUT_DIR/$arch/lib${LIB_NAME}.so" ]; then
         echo -e "${GREEN}✓ Built lib${LIB_NAME}.so for $arch${NC}"
     else
         echo -e "${RED}✗ Failed to build for $arch${NC}"
+        missing_arch=true
     fi
 done
+
+if [ "$missing_arch" = true ]; then
+    echo -e "${RED}Error: one or more Android PIVX Sapling libraries are missing.${NC}"
+    exit 1
+fi
 
 echo -e "${GREEN}✓ Android build complete!${NC}"
 echo -e "${GREEN}  Libraries: $OUTPUT_DIR${NC}"

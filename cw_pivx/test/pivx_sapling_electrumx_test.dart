@@ -28,14 +28,21 @@ void main() {
           'from_height': 2700500,
           'to_height': 2700599,
           'complete': true,
+          'block_hashes': {
+            '2700500': 'hash_a',
+            '2700501': 'hash_b',
+          },
           'blocks': <Map<String, dynamic>>[],
         }
       ]);
       final sapling = PIVXSaplingElectrumX(electrumClient: client);
 
-      final blocks = await sapling.getBlockRange(2700500, endHeight: 2700599);
+      final result =
+          await sapling.getBlockRangeResult(2700500, endHeight: 2700599);
 
-      expect(blocks, isEmpty);
+      expect(result.blocks, isEmpty);
+      expect(result.blockHashes[2700500], equals('hash_a'));
+      expect(result.blockHashes[2700501], equals('hash_b'));
     });
 
     test('rejects incomplete v1 envelopes', () async {
@@ -89,7 +96,7 @@ void main() {
           toHeight: 2700500,
           parallelBatches: 1,
           onBatch: (_) async {},
-          onRangeComplete: (rangeEnd) async {
+          onRangeComplete: (rangeEnd, blockHashes) async {
             completedRanges.add(rangeEnd);
           },
         ),

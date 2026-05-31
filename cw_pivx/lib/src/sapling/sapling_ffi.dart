@@ -1,5 +1,5 @@
 /// PIVX Sapling FFI bindings.
-/// 
+///
 /// This module provides Dart bindings to the native Rust library for
 /// PIVX Sapling shielded transaction support.
 
@@ -8,11 +8,12 @@ import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
+import 'package:cw_pivx/src/sapling/sapling_constants.dart';
 
 /// FFI buffer structure matching Rust's FFIBuffer.
 class FFIBuffer extends Struct {
   external Pointer<Uint8> data;
-  
+
   @Size()
   external int len;
 }
@@ -47,6 +48,7 @@ DynamicLibrary _loadLibrary() {
 late final DynamicLibrary _nativeLib;
 bool _nativeLibLoaded = false;
 String? _nativeLibError;
+String? _nativeSelfTestError;
 
 /// Check if the native library is available.
 bool get isSaplingFFIAvailable {
@@ -57,6 +59,29 @@ bool get isSaplingFFIAvailable {
 /// Get any error from library loading.
 String? get saplingFFIError => _nativeLibError;
 
+/// Get any error from the runtime native self-test.
+String? get saplingFFISelfTestError => _nativeSelfTestError;
+
+/// Result of the PIVX Sapling native runtime self-test.
+class SaplingNativeSelfTestResult {
+  const SaplingNativeSelfTestResult({
+    required this.loaded,
+    required this.symbolsReady,
+    required this.feeMatchesPolicy,
+    this.version,
+    this.error,
+  });
+
+  final bool loaded;
+  final bool symbolsReady;
+  final bool feeMatchesPolicy;
+  final String? version;
+  final String? error;
+
+  bool get passed =>
+      loaded && symbolsReady && feeMatchesPolicy && error == null;
+}
+
 void _ensureLoaded() {
   if (_nativeLibLoaded) return;
   try {
@@ -66,6 +91,9 @@ void _ensureLoaded() {
     _nativeLibError = e.toString();
   }
 }
+
+String _nativeUnavailableMessage() =>
+    'Native library not available: ${_nativeLibError ?? 'unknown load error'}';
 
 // ============================================================================
 // FFI Function Typedefs
@@ -87,8 +115,10 @@ typedef _VersionC = Pointer<Utf8> Function();
 typedef _VersionDart = Pointer<Utf8> Function();
 
 // Key management
-typedef _InitKeysC = Int64 Function(Pointer<Uint8> seed, Size seedLen, Uint8 isTestnet);
-typedef _InitKeysDart = int Function(Pointer<Uint8> seed, int seedLen, int isTestnet);
+typedef _InitKeysC = Int64 Function(
+    Pointer<Uint8> seed, Size seedLen, Uint8 isTestnet);
+typedef _InitKeysDart = int Function(
+    Pointer<Uint8> seed, int seedLen, int isTestnet);
 
 typedef _DisposeKeysC = Void Function(Int64 handle);
 typedef _DisposeKeysDart = void Function(int handle);
@@ -102,8 +132,10 @@ typedef _DeriveAddressDart = Pointer<Utf8> Function(int handle, int index);
 typedef _GetViewingKeyC = Pointer<Utf8> Function(Int64 handle);
 typedef _GetViewingKeyDart = Pointer<Utf8> Function(int handle);
 
-typedef _ValidateAddressC = Uint8 Function(Pointer<Utf8> address, Uint8 isTestnet);
-typedef _ValidateAddressDart = int Function(Pointer<Utf8> address, int isTestnet);
+typedef _ValidateAddressC = Uint8 Function(
+    Pointer<Utf8> address, Uint8 isTestnet);
+typedef _ValidateAddressDart = int Function(
+    Pointer<Utf8> address, int isTestnet);
 
 // Sync engine
 typedef _InitSyncEngineC = Int64 Function(Uint8 isTestnet);
@@ -149,16 +181,20 @@ typedef _TryDecryptOutputDart = int Function(
 );
 
 // Check nullifier (mark notes as spent)
-typedef _CheckNullifierC = Uint8 Function(Int64 syncHandle, Pointer<Uint8> nullifier);
-typedef _CheckNullifierDart = int Function(int syncHandle, Pointer<Uint8> nullifier);
+typedef _CheckNullifierC = Uint8 Function(
+    Int64 syncHandle, Pointer<Uint8> nullifier);
+typedef _CheckNullifierDart = int Function(
+    int syncHandle, Pointer<Uint8> nullifier);
 
 // Set sync height
 typedef _SetSyncHeightC = Void Function(Int64 syncHandle, Uint32 height);
 typedef _SetSyncHeightDart = void Function(int syncHandle, int height);
 
 // Fee estimation
-typedef _EstimateFeeC = Uint64 Function(Size spends, Size outputs, Size tInputs, Size tOutputs);
-typedef _EstimateFeeDart = int Function(int spends, int outputs, int tInputs, int tOutputs);
+typedef _EstimateFeeC = Uint64 Function(
+    Size spends, Size outputs, Size tInputs, Size tOutputs);
+typedef _EstimateFeeDart = int Function(
+    int spends, int outputs, int tInputs, int tOutputs);
 
 // Prover management
 typedef _InitProverC = Int32 Function(Pointer<Utf8> paramsDir);
@@ -223,56 +259,69 @@ late final _freeString = _nativeLib
 late final _freeBuffer = _nativeLib
     .lookupFunction<_FreeBufferC, _FreeBufferDart>('cw_pivx_free_buffer');
 
-late final _getLastError = _nativeLib
-    .lookupFunction<_GetLastErrorC, _GetLastErrorDart>('cw_pivx_get_last_error');
+late final _getLastError =
+    _nativeLib.lookupFunction<_GetLastErrorC, _GetLastErrorDart>(
+        'cw_pivx_get_last_error');
 
-late final _version = _nativeLib
-    .lookupFunction<_VersionC, _VersionDart>('cw_pivx_version');
+late final _version =
+    _nativeLib.lookupFunction<_VersionC, _VersionDart>('cw_pivx_version');
 
-late final _initKeys = _nativeLib
-    .lookupFunction<_InitKeysC, _InitKeysDart>('cw_pivx_init_keys');
+late final _initKeys =
+    _nativeLib.lookupFunction<_InitKeysC, _InitKeysDart>('cw_pivx_init_keys');
 
 late final _disposeKeys = _nativeLib
     .lookupFunction<_DisposeKeysC, _DisposeKeysDart>('cw_pivx_dispose_keys');
 
-late final _getDefaultAddress = _nativeLib
-    .lookupFunction<_GetDefaultAddressC, _GetDefaultAddressDart>('cw_pivx_get_default_address');
+late final _getDefaultAddress =
+    _nativeLib.lookupFunction<_GetDefaultAddressC, _GetDefaultAddressDart>(
+        'cw_pivx_get_default_address');
 
-late final _deriveAddress = _nativeLib
-    .lookupFunction<_DeriveAddressC, _DeriveAddressDart>('cw_pivx_derive_address');
+late final _deriveAddress =
+    _nativeLib.lookupFunction<_DeriveAddressC, _DeriveAddressDart>(
+        'cw_pivx_derive_address');
 
-late final _getViewingKey = _nativeLib
-    .lookupFunction<_GetViewingKeyC, _GetViewingKeyDart>('cw_pivx_get_viewing_key');
+late final _getViewingKey =
+    _nativeLib.lookupFunction<_GetViewingKeyC, _GetViewingKeyDart>(
+        'cw_pivx_get_viewing_key');
 
-late final _validateAddress = _nativeLib
-    .lookupFunction<_ValidateAddressC, _ValidateAddressDart>('cw_pivx_validate_address');
+late final _validateAddress =
+    _nativeLib.lookupFunction<_ValidateAddressC, _ValidateAddressDart>(
+        'cw_pivx_validate_address');
 
-late final _initSyncEngine = _nativeLib
-    .lookupFunction<_InitSyncEngineC, _InitSyncEngineDart>('cw_pivx_init_sync_engine');
+late final _initSyncEngine =
+    _nativeLib.lookupFunction<_InitSyncEngineC, _InitSyncEngineDart>(
+        'cw_pivx_init_sync_engine');
 
-late final _disposeSyncEngine = _nativeLib
-    .lookupFunction<_DisposeSyncEngineC, _DisposeSyncEngineDart>('cw_pivx_dispose_sync_engine');
+late final _disposeSyncEngine =
+    _nativeLib.lookupFunction<_DisposeSyncEngineC, _DisposeSyncEngineDart>(
+        'cw_pivx_dispose_sync_engine');
 
-late final _getSyncHeight = _nativeLib
-    .lookupFunction<_GetSyncHeightC, _GetSyncHeightDart>('cw_pivx_get_sync_height');
+late final _getSyncHeight =
+    _nativeLib.lookupFunction<_GetSyncHeightC, _GetSyncHeightDart>(
+        'cw_pivx_get_sync_height');
 
-late final _getShieldedBalance = _nativeLib
-    .lookupFunction<_GetShieldedBalanceC, _GetShieldedBalanceDart>('cw_pivx_get_shielded_balance');
+late final _getShieldedBalance =
+    _nativeLib.lookupFunction<_GetShieldedBalanceC, _GetShieldedBalanceDart>(
+        'cw_pivx_get_shielded_balance');
 
-late final _getUnspentNoteCount = _nativeLib
-    .lookupFunction<_GetUnspentNoteCountC, _GetUnspentNoteCountDart>('cw_pivx_get_unspent_note_count');
+late final _getUnspentNoteCount =
+    _nativeLib.lookupFunction<_GetUnspentNoteCountC, _GetUnspentNoteCountDart>(
+        'cw_pivx_get_unspent_note_count');
 
 late final _resetSync = _nativeLib
     .lookupFunction<_ResetSyncC, _ResetSyncDart>('cw_pivx_reset_sync');
 
-late final _tryDecryptOutput = _nativeLib
-    .lookupFunction<_TryDecryptOutputC, _TryDecryptOutputDart>('cw_pivx_try_decrypt_output');
+late final _tryDecryptOutput =
+    _nativeLib.lookupFunction<_TryDecryptOutputC, _TryDecryptOutputDart>(
+        'cw_pivx_try_decrypt_output');
 
-late final _checkNullifier = _nativeLib
-    .lookupFunction<_CheckNullifierC, _CheckNullifierDart>('cw_pivx_check_nullifier');
+late final _checkNullifier =
+    _nativeLib.lookupFunction<_CheckNullifierC, _CheckNullifierDart>(
+        'cw_pivx_check_nullifier');
 
-late final _setSyncHeight = _nativeLib
-    .lookupFunction<_SetSyncHeightC, _SetSyncHeightDart>('cw_pivx_set_sync_height');
+late final _setSyncHeight =
+    _nativeLib.lookupFunction<_SetSyncHeightC, _SetSyncHeightDart>(
+        'cw_pivx_set_sync_height');
 
 late final _estimateFee = _nativeLib
     .lookupFunction<_EstimateFeeC, _EstimateFeeDart>('cw_pivx_estimate_fee');
@@ -280,31 +329,39 @@ late final _estimateFee = _nativeLib
 late final _initProver = _nativeLib
     .lookupFunction<_InitProverC, _InitProverDart>('cw_pivx_init_prover');
 
-late final _isProverInitialized = _nativeLib
-    .lookupFunction<_IsProverInitializedC, _IsProverInitializedDart>('cw_pivx_is_prover_initialized');
+late final _isProverInitialized =
+    _nativeLib.lookupFunction<_IsProverInitializedC, _IsProverInitializedDart>(
+        'cw_pivx_is_prover_initialized');
 
-late final _disposeProver = _nativeLib
-    .lookupFunction<_DisposeProverC, _DisposeProverDart>('cw_pivx_dispose_prover');
+late final _disposeProver =
+    _nativeLib.lookupFunction<_DisposeProverC, _DisposeProverDart>(
+        'cw_pivx_dispose_prover');
 
-late final _createTransaction = _nativeLib
-    .lookupFunction<_CreateTransactionC, _CreateTransactionDart>('cw_pivx_create_transaction');
+late final _createTransaction =
+    _nativeLib.lookupFunction<_CreateTransactionC, _CreateTransactionDart>(
+        'cw_pivx_create_transaction');
 
-late final _buildShieldedTx = _nativeLib
-    .lookupFunction<_BuildShieldedTxC, _BuildShieldedTxDart>('cw_pivx_build_shielded_tx');
+late final _buildShieldedTx =
+    _nativeLib.lookupFunction<_BuildShieldedTxC, _BuildShieldedTxDart>(
+        'cw_pivx_build_shielded_tx');
 
-late final _hasProvingParams = _nativeLib
-    .lookupFunction<_HasProvingParamsC, _HasProvingParamsDart>('cw_pivx_has_proving_params');
+late final _hasProvingParams =
+    _nativeLib.lookupFunction<_HasProvingParamsC, _HasProvingParamsDart>(
+        'cw_pivx_has_proving_params');
 
 // Get spendable notes from sync state
 typedef _GetSpendableNotesC = Pointer<Utf8> Function(Int64 syncHandle);
 typedef _GetSpendableNotesDart = Pointer<Utf8> Function(int syncHandle);
 
-late final _getSpendableNotes = _nativeLib
-    .lookupFunction<_GetSpendableNotesC, _GetSpendableNotesDart>('cw_pivx_get_spendable_notes');
+late final _getSpendableNotes =
+    _nativeLib.lookupFunction<_GetSpendableNotesC, _GetSpendableNotesDart>(
+        'cw_pivx_get_spendable_notes');
 
 // Restore a note from JSON
-typedef _RestoreNoteC = Int32 Function(Int64 keyHandle, Int64 syncHandle, Pointer<Utf8> noteJson);
-typedef _RestoreNoteDart = int Function(int keyHandle, int syncHandle, Pointer<Utf8> noteJson);
+typedef _RestoreNoteC = Int32 Function(
+    Int64 keyHandle, Int64 syncHandle, Pointer<Utf8> noteJson);
+typedef _RestoreNoteDart = int Function(
+    int keyHandle, int syncHandle, Pointer<Utf8> noteJson);
 
 late final _restoreNote = _nativeLib
     .lookupFunction<_RestoreNoteC, _RestoreNoteDart>('cw_pivx_restore_note');
@@ -317,10 +374,10 @@ late final _restoreNote = _nativeLib
 String? getLastError() {
   _ensureLoaded();
   if (!_nativeLibLoaded) return _nativeLibError;
-  
+
   final ptr = _getLastError();
   if (ptr == nullptr) return null;
-  
+
   final error = ptr.toDartString();
   _freeString(ptr);
   return error;
@@ -330,20 +387,89 @@ String? getLastError() {
 String getVersion() {
   _ensureLoaded();
   if (!_nativeLibLoaded) return 'not loaded';
-  
+
   final ptr = _version();
   if (ptr == nullptr) return 'unknown';
-  
+
   final version = ptr.toDartString();
   _freeString(ptr);
   return version;
+}
+
+/// Run a lightweight native-library self-test for release/package validation.
+///
+/// This verifies that the platform library loads, expected FFI symbols resolve,
+/// the version function is callable, and native Sapling fee estimation still
+/// matches the Dart/Core-derived fee policy.
+SaplingNativeSelfTestResult runSaplingNativeSelfTest() {
+  _ensureLoaded();
+  if (!_nativeLibLoaded) {
+    final error = _nativeUnavailableMessage();
+    _nativeSelfTestError = error;
+    return SaplingNativeSelfTestResult(
+      loaded: false,
+      symbolsReady: false,
+      feeMatchesPolicy: false,
+      error: error,
+    );
+  }
+
+  try {
+    final version = getVersion();
+    if (version == 'not loaded' || version == 'unknown') {
+      final error = 'Native version symbol returned $version';
+      _nativeSelfTestError = error;
+      return SaplingNativeSelfTestResult(
+        loaded: true,
+        symbolsReady: false,
+        feeMatchesPolicy: false,
+        version: version,
+        error: error,
+      );
+    }
+
+    final nativeFee = estimateFee(numSpends: 1, numOutputs: 1);
+    final expectedFee = PivxFeePolicy.saplingFee(
+      saplingInputs: 1,
+      saplingOutputs: 1,
+    );
+    if (nativeFee != expectedFee) {
+      final error =
+          'Native fee policy mismatch: native=$nativeFee expected=$expectedFee';
+      _nativeSelfTestError = error;
+      return SaplingNativeSelfTestResult(
+        loaded: true,
+        symbolsReady: true,
+        feeMatchesPolicy: false,
+        version: version,
+        error: error,
+      );
+    }
+
+    _nativeSelfTestError = null;
+    return SaplingNativeSelfTestResult(
+      loaded: true,
+      symbolsReady: true,
+      feeMatchesPolicy: true,
+      version: version,
+    );
+  } catch (e) {
+    final error = e.toString();
+    _nativeSelfTestError = error;
+    return SaplingNativeSelfTestResult(
+      loaded: true,
+      symbolsReady: false,
+      feeMatchesPolicy: false,
+      error: error,
+    );
+  }
 }
 
 /// Validate a PIVX shielded address.
 bool validateAddress(String address, {bool isTestnet = false}) {
   _ensureLoaded();
   if (!_nativeLibLoaded) return false;
-  
+
   final addressPtr = address.toNativeUtf8();
   try {
     return _validateAddress(addressPtr, isTestnet ? 1 : 0) == 1;
@@ -359,11 +485,16 @@ int estimateFee({
   int numTransparentInputs = 0,
   int numTransparentOutputs = 0,
 }) {
-  return _estimateFee(numSpends, numOutputs, numTransparentInputs, numTransparentOutputs);
+  _ensureLoaded();
+  if (!_nativeLibLoaded) throw StateError(_nativeUnavailableMessage());
+  return _estimateFee(
+      numSpends, numOutputs, numTransparentInputs, numTransparentOutputs);
 }
 
 /// Check if proving parameters are available.
 bool hasProvingParams(String path) {
+  _ensureLoaded();
+  if (!_nativeLibLoaded) return false;
   final pathPtr = path.toNativeUtf8();
   try {
     return _hasProvingParams(pathPtr) == 1;
@@ -373,16 +504,16 @@ bool hasProvingParams(String path) {
 }
 
 /// Initialize the Groth16 prover with proving parameters.
-/// 
+///
 /// This loads the ~50MB parameter files into memory.
 /// Should be called once before any transaction building.
-/// 
+///
 /// Returns true on success, false on failure.
 /// Check [getLastError] for details on failure.
 bool initProver(String paramsDir) {
   _ensureLoaded();
   if (!_nativeLibLoaded) return false;
-  
+
   final dirPtr = paramsDir.toNativeUtf8();
   try {
     return _initProver(dirPtr) == 0;
@@ -406,18 +537,18 @@ void disposeProver() {
 }
 
 /// Get all spendable notes from the sync state as JSON.
-/// 
+///
 /// Returns a list of note data objects with all fields needed
 /// for transaction building.
 List<Map<String, dynamic>> getSpendableNotes(int syncHandle) {
   _ensureLoaded();
   if (!_nativeLibLoaded) return [];
-  
+
   final ptr = _getSpendableNotes(syncHandle);
   if (ptr == nullptr) {
     return [];
   }
-  
+
   try {
     final jsonStr = ptr.toDartString();
     final list = jsonDecode(jsonStr) as List<dynamic>;
@@ -428,10 +559,10 @@ List<Map<String, dynamic>> getSpendableNotes(int syncHandle) {
 }
 
 /// Restore a note from JSON data.
-/// 
+///
 /// This allows restoring notes from persistent storage after app restart.
 /// The JSON should contain the same fields returned by getSpendableNotes.
-/// 
+///
 /// Returns true on success, false on failure.
 bool restoreNote({
   required int keyHandle,
@@ -440,10 +571,10 @@ bool restoreNote({
 }) {
   _ensureLoaded();
   if (!_nativeLibLoaded) return false;
-  
+
   final jsonStr = jsonEncode(noteData);
   final jsonPtr = jsonStr.toNativeUtf8();
-  
+
   try {
     return _restoreNote(keyHandle, syncHandle, jsonPtr) == 1;
   } finally {
@@ -452,7 +583,7 @@ bool restoreNote({
 }
 
 /// Build a shielded transaction with explicit notes and witnesses.
-/// 
+///
 /// [keyHandle] - Handle from SaplingKeys
 /// [notesJson] - JSON array of SpendableNoteData objects
 /// [toAddress] - Recipient Sapling address (ps1...)
@@ -460,7 +591,7 @@ bool restoreNote({
 /// [memo] - Optional memo (max 512 bytes)
 /// [fee] - Transaction fee in zatoshis
 /// [anchorHex] - 32-byte merkle root as hex string
-/// 
+///
 /// Returns a Map with transaction details or throws on error.
 Map<String, dynamic> buildShieldedTransaction({
   required int keyHandle,
@@ -475,12 +606,12 @@ Map<String, dynamic> buildShieldedTransaction({
   if (!_nativeLibLoaded) {
     throw Exception('Native library not available: $_nativeLibError');
   }
-  
+
   final notesPtr = notesJson.toNativeUtf8();
   final toPtr = toAddress.toNativeUtf8();
   final memoPtr = memo?.toNativeUtf8() ?? nullptr;
   final anchorPtr = anchorHex.toNativeUtf8();
-  
+
   try {
     final buffer = _buildShieldedTx(
       keyHandle,
@@ -491,15 +622,15 @@ Map<String, dynamic> buildShieldedTransaction({
       fee,
       anchorPtr,
     );
-    
+
     if (buffer.data == nullptr || buffer.len == 0) {
       throw Exception(getLastError() ?? 'Failed to build transaction');
     }
-    
+
     // Parse result JSON
     final resultStr = buffer.data.cast<Utf8>().toDartString(length: buffer.len);
     _freeBuffer(buffer);
-    
+
     return Map<String, dynamic>.from(
       (const JsonDecoder().convert(resultStr)) as Map,
     );
@@ -514,78 +645,78 @@ Map<String, dynamic> buildShieldedTransaction({
 }
 
 /// PIVX Sapling key manager handle.
-/// 
+///
 /// Manages shielded keys derived from a seed.
 class SaplingKeys {
   final int _handle;
   bool _disposed = false;
-  
+
   SaplingKeys._(this._handle);
-  
+
   /// Initialize keys from a seed.
   static SaplingKeys fromSeed(Uint8List seed, {bool isTestnet = false}) {
     _ensureLoaded();
     if (!_nativeLibLoaded) {
       throw Exception('Native library not available: $_nativeLibError');
     }
-    
+
     final seedPtr = malloc<Uint8>(seed.length);
     try {
       seedPtr.asTypedList(seed.length).setAll(0, seed);
-      
+
       final handle = _initKeys(seedPtr, seed.length, isTestnet ? 1 : 0);
       if (handle < 0) {
         throw Exception(getLastError() ?? 'Failed to initialize keys');
       }
-      
+
       return SaplingKeys._(handle);
     } finally {
       malloc.free(seedPtr);
     }
   }
-  
+
   /// Get the default shielded address.
   String getDefaultAddress() {
     _checkDisposed();
-    
+
     final ptr = _getDefaultAddress(_handle);
     if (ptr == nullptr) {
       throw Exception(getLastError() ?? 'Failed to get address');
     }
-    
+
     final address = ptr.toDartString();
     _freeString(ptr);
     return address;
   }
-  
+
   /// Derive an address at a specific diversifier index.
   String deriveAddress(int index) {
     _checkDisposed();
-    
+
     final ptr = _deriveAddress(_handle, index);
     if (ptr == nullptr) {
       throw Exception(getLastError() ?? 'Failed to derive address');
     }
-    
+
     final address = ptr.toDartString();
     _freeString(ptr);
     return address;
   }
-  
+
   /// Get the full viewing key (for watch-only wallets).
   String getViewingKey() {
     _checkDisposed();
-    
+
     final ptr = _getViewingKey(_handle);
     if (ptr == nullptr) {
       throw Exception(getLastError() ?? 'Failed to get viewing key');
     }
-    
+
     final key = ptr.toDartString();
     _freeString(ptr);
     return key;
   }
-  
+
   /// Dispose the key manager.
   void dispose() {
     if (!_disposed) {
@@ -593,13 +724,13 @@ class SaplingKeys {
       _disposed = true;
     }
   }
-  
+
   void _checkDisposed() {
     if (_disposed) {
       throw StateError('SaplingKeys has been disposed');
     }
   }
-  
+
   /// Get the native handle (for internal use).
   int get handle {
     _checkDisposed();
@@ -608,62 +739,66 @@ class SaplingKeys {
 }
 
 /// PIVX Sapling sync engine handle.
-/// 
+///
 /// Manages blockchain synchronization and note tracking.
 class SaplingSyncEngine {
   final int _handle;
   bool _disposed = false;
-  
+
   SaplingSyncEngine._(this._handle);
-  
+
   /// Get the native handle for direct FFI calls.
   int get handle => _handle;
-  
+
   /// Create a new sync engine.
   factory SaplingSyncEngine({bool isTestnet = false}) {
+    _ensureLoaded();
+    if (!_nativeLibLoaded) {
+      throw Exception(_nativeUnavailableMessage());
+    }
     final handle = _initSyncEngine(isTestnet ? 1 : 0);
     if (handle < 0) {
       throw Exception(getLastError() ?? 'Failed to initialize sync engine');
     }
     return SaplingSyncEngine._(handle);
   }
-  
+
   /// Get the current sync height.
   int get syncHeight {
     _checkDisposed();
     return _getSyncHeight(_handle);
   }
-  
+
   /// Get the shielded balance (in satoshis).
   int get shieldedBalance {
     _checkDisposed();
     return _getShieldedBalance(_handle);
   }
-  
+
   /// Get the number of unspent notes.
   int get unspentNoteCount {
     _checkDisposed();
     return _getUnspentNoteCount(_handle);
   }
-  
+
   /// Reset the sync engine (for rescan).
   void reset() {
     _checkDisposed();
     _resetSync(_handle);
   }
-  
+
   /// Set the current sync height.
   void setSyncHeight(int height) {
     _checkDisposed();
     _setSyncHeight(_handle, height);
   }
-  
+
   /// Try to decrypt a Sapling output.
-  /// 
+  ///
   /// This is the core function for detecting incoming shielded transactions.
   /// It attempts trial decryption of a Sapling output using the wallet's
   /// incoming viewing key.
-  /// 
+  ///
   /// Returns the note value in zatoshis if decryption succeeds, 0 otherwise.
   int tryDecryptOutput({
     required SaplingKeys keys,
@@ -676,20 +811,21 @@ class SaplingSyncEngine {
     required int position,
   }) {
     _checkDisposed();
-    
+
     if (cmu.length != 32) throw ArgumentError('cmu must be 32 bytes');
     if (epk.length != 32) throw ArgumentError('epk must be 32 bytes');
-    if (encCiphertext.length != 580) throw ArgumentError('encCiphertext must be 580 bytes');
-    
+    if (encCiphertext.length != 580)
+      throw ArgumentError('encCiphertext must be 580 bytes');
+
     final cmuPtr = malloc<Uint8>(32);
     final epkPtr = malloc<Uint8>(32);
     final encPtr = malloc<Uint8>(580);
-    
+
     try {
       cmuPtr.asTypedList(32).setAll(0, cmu);
       epkPtr.asTypedList(32).setAll(0, epk);
       encPtr.asTypedList(580).setAll(0, encCiphertext);
-      
+
       final result = _tryDecryptOutput(
         keys.handle,
         _handle,
@@ -701,7 +837,7 @@ class SaplingSyncEngine {
         outputIndex,
         position,
       );
-      
+
       return result;
     } finally {
       malloc.free(cmuPtr);
@@ -709,15 +845,16 @@ class SaplingSyncEngine {
       malloc.free(encPtr);
     }
   }
-  
+
   /// Check if a nullifier matches any of our notes and mark them spent.
-  /// 
+  ///
   /// Returns true if a note was marked spent.
   bool checkNullifier(Uint8List nullifier) {
     _checkDisposed();
-    
-    if (nullifier.length != 32) throw ArgumentError('nullifier must be 32 bytes');
-    
+
+    if (nullifier.length != 32)
+      throw ArgumentError('nullifier must be 32 bytes');
+
     final nullifierPtr = malloc<Uint8>(32);
     try {
       nullifierPtr.asTypedList(32).setAll(0, nullifier);
@@ -734,7 +871,7 @@ class SaplingSyncEngine {
       _disposed = true;
     }
   }
-  
+
   void _checkDisposed() {
     if (_disposed) {
       throw StateError('SaplingSyncEngine has been disposed');
@@ -752,10 +889,15 @@ Uint8List createTransaction({
   required int height,
   required String provingParamsPath,
 }) {
+  _ensureLoaded();
+  if (!_nativeLibLoaded) {
+    throw Exception(_nativeUnavailableMessage());
+  }
+
   final toPtr = toAddress.toNativeUtf8();
   final memoPtr = memo?.toNativeUtf8() ?? nullptr;
   final pathPtr = provingParamsPath.toNativeUtf8();
-  
+
   try {
     final buffer = _createTransaction(
       keys.handle,
@@ -766,19 +908,19 @@ Uint8List createTransaction({
       height,
       pathPtr,
     );
-    
+
     if (buffer.data == nullptr || buffer.len == 0) {
       throw Exception(getLastError() ?? 'Failed to create transaction');
     }
-    
+
     // Copy data to Dart
     final result = Uint8List.fromList(
       buffer.data.asTypedList(buffer.len),
     );
-    
+
     // Free native buffer
     _freeBuffer(buffer);
-    
+
     return result;
   } finally {
     malloc.free(toPtr);

@@ -102,15 +102,28 @@ if [ "$SKIP_NATIVE" = false ]; then
   # PIVX
   echo_info "Building PIVX libraries..."
   cd cw_pivx
-  if [ ! -f "android/src/main/jniLibs/arm64-v8a/libcw_pivx_sapling.so" ]; then
+  pivx_rebuild=false
+  for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+    if [ ! -s "android/src/main/jniLibs/$abi/libcw_pivx_sapling.so" ]; then
+      echo_warn "Missing PIVX Sapling library for $abi"
+      pivx_rebuild=true
+    fi
+  done
+  if [ "$pivx_rebuild" = true ]; then
     cargo ndk -t arm64-v8a -o android/src/main/jniLibs build --release
     cargo ndk -t armeabi-v7a -o android/src/main/jniLibs build --release
     cargo ndk -t x86_64 -o android/src/main/jniLibs build --release
     cargo ndk -t x86 -o android/src/main/jniLibs build --release
     echo_info "✅ PIVX libraries built"
   else
-    echo_info "✅ PIVX libraries already exist"
+    echo_info "✅ PIVX libraries already exist for all Android ABIs"
   fi
+  for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+    if [ ! -s "android/src/main/jniLibs/$abi/libcw_pivx_sapling.so" ]; then
+      echo_error "PIVX Sapling library missing after build for $abi"
+      exit 1
+    fi
+  done
   cd ..
   
   # MWEB

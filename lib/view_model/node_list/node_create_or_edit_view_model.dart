@@ -1,7 +1,9 @@
 import 'package:cake_wallet/core/execution_state.dart';
 import 'package:cake_wallet/entities/qr_scanner.dart';
 import 'package:cake_wallet/store/settings_store.dart';
+import 'package:cw_bitcoin/electrum.dart';
 import 'package:cw_core/utils/proxy_wrapper.dart';
+import 'package:cw_pivx/src/sapling/pivx_sapling_electrumx.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:hive/hive.dart';
 import 'package:mobx/mobx.dart';
@@ -13,10 +15,12 @@ import 'package:permission_handler/permission_handler.dart';
 
 part 'node_create_or_edit_view_model.g.dart';
 
-class NodeCreateOrEditViewModel = NodeCreateOrEditViewModelBase with _$NodeCreateOrEditViewModel;
+class NodeCreateOrEditViewModel = NodeCreateOrEditViewModelBase
+    with _$NodeCreateOrEditViewModel;
 
 abstract class NodeCreateOrEditViewModelBase with Store {
-  NodeCreateOrEditViewModelBase(this._nodeSource, this._walletType, this._settingsStore)
+  NodeCreateOrEditViewModelBase(
+      this._nodeSource, this._walletType, this._settingsStore)
       : state = InitialExecutionState(),
         connectionState = InitialExecutionState(),
         useSSL = false,
@@ -71,10 +75,13 @@ abstract class NodeCreateOrEditViewModelBase with Store {
 
   @computed
   bool get isReady =>
-      (address.isNotEmpty) || _walletType == WalletType.decred; // Allow an empty address.
+      (address.isNotEmpty) ||
+      _walletType == WalletType.decred; // Allow an empty address.
 
   bool get hasAuthCredentials =>
-      _walletType == WalletType.monero || _walletType == WalletType.wownero || _walletType == WalletType.haven;
+      _walletType == WalletType.monero ||
+      _walletType == WalletType.wownero ||
+      _walletType == WalletType.haven;
 
   bool get hasPathSupport {
     switch (_walletType) {
@@ -152,7 +159,8 @@ abstract class NodeCreateOrEditViewModelBase with Store {
   void setTrusted(bool val) => trusted = val;
 
   @action
-  void setIsEnabledForAutoSwitching(bool val) => isEnabledForAutoSwitching = val;
+  void setIsEnabledForAutoSwitching(bool val) =>
+      isEnabledForAutoSwitching = val;
 
   @action
   void setSocksProxy(bool val) => useSocksProxy = val;
@@ -171,7 +179,14 @@ abstract class NodeCreateOrEditViewModelBase with Store {
         useSSL: useSSL,
         trusted: trusted,
         isEnabledForAutoSwitching: isEnabledForAutoSwitching,
-        socksProxyAddress: socksProxyAddress);
+        socksProxyAddress: socksProxyAddress,
+        supportsPivxSapling: editingNode?.supportsPivxSapling,
+        pivxSaplingContract: editingNode?.pivxSaplingContract,
+        pivxSaplingServerVersion: editingNode?.pivxSaplingServerVersion,
+        pivxCoreVersion: editingNode?.pivxCoreVersion,
+        pivxSaplingNetwork: editingNode?.pivxSaplingNetwork,
+        pivxSaplingActivationHeight: editingNode?.pivxSaplingActivationHeight,
+        pivxSaplingLastCheckedAt: editingNode?.pivxSaplingLastCheckedAt);
     try {
       state = IsExecutingState();
       if (editingNode != null) {
@@ -207,6 +222,15 @@ abstract class NodeCreateOrEditViewModelBase with Store {
     try {
       connectionState = IsExecutingState();
       final isAlive = await node.requestNode();
+      if (isAlive && _walletType == WalletType.pivx) {
+        final capabilities = await _pivxNodeSaplingCapabilities(node);
+        if (capabilities == null || !capabilities.supportsBlockRange) {
+          connectionState = FailureState(
+              'PIVX node is reachable, but Sapling RPC capability is unavailable.');
+          return;
+        }
+        _applyPivxSaplingMetadata(node, capabilities);
+      }
       connectionState = ExecutedSuccessfullyState(payload: isAlive);
     } catch (e) {
       connectionState = FailureState(e.toString());
@@ -221,6 +245,52 @@ abstract class NodeCreateOrEditViewModelBase with Store {
       item.useSSL ??= false;
     });
     return nodes.firstWhereOrNull((item) => item == node);
+  }
+
+  Future<SaplingRpcCapabilities?> _pivxNodeSaplingCapabilities(
+      Node node) async {
+    final client = ElectrumClient();
+    try {
+      await client.connectToUri(node.uri, useSSL: node.useSSL);
+      if (!client.isConnected) {
+        return null;
+      }
+
+      return await _probePivxSapling(client, isTestnet: false) ??
+          await _probePivxSapling(client, isTestnet: true);
+    } catch (_) {
+      return null;
+    } finally {
+      await client.close();
+    }
+  }
+
+  Future<SaplingRpcCapabilities?> _probePivxSapling(
+    ElectrumClient client, {
+    required bool isTestnet,
+  }) async {
+    try {
+      final capabilities = await PIVXSaplingElectrumX(
+        electrumClient: client,
+        isTestnet: isTestnet,
+      ).probeCapabilities();
+      return capabilities;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _applyPivxSaplingMetadata(
+    Node node,
+    SaplingRpcCapabilities capabilities,
+  ) {
+    node.supportsPivxSapling = capabilities.supportsBlockRange;
+    node.pivxSaplingContract = capabilities.contract;
+    node.pivxSaplingServerVersion = capabilities.serverVersion;
+    node.pivxCoreVersion = capabilities.pivxCoreVersion;
+    node.pivxSaplingNetwork = capabilities.network;
+    node.pivxSaplingActivationHeight = capabilities.activationHeight;
+    node.pivxSaplingLastCheckedAt = DateTime.now();
   }
 
   @action
@@ -239,7 +309,8 @@ abstract class NodeCreateOrEditViewModelBase with Store {
         throw Exception('Unexpected scan QR code value: value is empty');
       }
 
-      if (code.startsWith("monero_node:")) code = code.replaceFirst("monero_node:", "tcp://");
+      if (code.startsWith("monero_node:"))
+        code = code.replaceFirst("monero_node:", "tcp://");
       if (!code.contains('://')) code = 'tcp://$code';
 
       final uri = Uri.tryParse(code);

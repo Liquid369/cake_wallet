@@ -13,6 +13,7 @@
 //! - Thread-safe usage patterns
 
 pub mod error;
+pub mod ffi;
 pub mod keys;
 pub mod notes;
 pub mod prover;
@@ -20,16 +21,20 @@ pub mod sync;
 pub mod transaction;
 pub mod types;
 pub mod utils;
-pub mod ffi;
 
 use std::ffi::{c_char, c_uchar, CString};
 use std::ptr;
 
 pub use error::*;
-pub use keys::{SaplingKeyManager, encode_payment_address, decode_payment_address, validate_address, hrp};
-pub use notes::{SpendableNote, CompactNote, select_notes_for_amount};
-pub use sync::{SyncState, SyncProgress, SAPLING_TREE_DEPTH};
-pub use transaction::{TransactionBuilder, TransactionOutput, TransactionOptions, BuiltTransaction, PivxMainnet, PivxTestnet, PIVX_SAPLING_ACTIVATION};
+pub use keys::{
+    decode_payment_address, encode_payment_address, hrp, validate_address, SaplingKeyManager,
+};
+pub use notes::{select_notes_for_amount, CompactNote, SpendableNote};
+pub use sync::{SyncProgress, SyncState, SAPLING_TREE_DEPTH};
+pub use transaction::{
+    BuiltTransaction, PivxMainnet, PivxTestnet, TransactionBuilder, TransactionOptions,
+    TransactionOutput, PIVX_SAPLING_ACTIVATION,
+};
 pub use types::Network;
 
 // Re-export FFI module functions
@@ -55,7 +60,7 @@ pub extern "C" fn pivx_sapling_version() -> *mut c_char {
 // ============================================================================
 
 /// Free a string allocated by this library.
-/// 
+///
 /// # Safety
 /// The pointer must have been allocated by this library and not already freed.
 #[no_mangle]
@@ -89,11 +94,11 @@ thread_local! {
 /// Caller must free the returned string with `pivx_free_string`.
 #[no_mangle]
 pub extern "C" fn pivx_get_last_error() -> *mut c_char {
-    LAST_ERROR.with(|e| {
-        match e.borrow().as_ref() {
-            Some(msg) => CString::new(msg.as_str()).map(|s| s.into_raw()).unwrap_or(ptr::null_mut()),
-            None => ptr::null_mut(),
-        }
+    LAST_ERROR.with(|e| match e.borrow().as_ref() {
+        Some(msg) => CString::new(msg.as_str())
+            .map(|s| s.into_raw())
+            .unwrap_or(ptr::null_mut()),
+        None => ptr::null_mut(),
     })
 }
 

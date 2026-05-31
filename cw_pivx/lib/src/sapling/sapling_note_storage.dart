@@ -53,6 +53,9 @@ class StoredSaplingNote {
   /// Transaction ID that spent this note (if spent).
   String? spendingTxid;
 
+  /// Block height where this note's nullifier was mined as spent.
+  int? spendingHeight;
+
   /// Transaction ID that is expected to spend this note, if pending.
   String? pendingSpendingTxid;
 
@@ -93,6 +96,7 @@ class StoredSaplingNote {
     this.isSpent = false,
     this.isPendingSpend = false,
     this.spendingTxid,
+    this.spendingHeight,
     this.pendingSpendingTxid,
     this.pendingSpendAt,
     DateTime? discoveredAt,
@@ -118,6 +122,7 @@ class StoredSaplingNote {
       isSpent: json['isSpent'] as bool? ?? false,
       isPendingSpend: json['isPendingSpend'] as bool? ?? false,
       spendingTxid: json['spendingTxid'] as String?,
+      spendingHeight: json['spendingHeight'] as int?,
       pendingSpendingTxid: json['pendingSpendingTxid'] as String?,
       pendingSpendAt: json['pendingSpendAt'] != null
           ? DateTime.parse(json['pendingSpendAt'] as String)
@@ -148,6 +153,7 @@ class StoredSaplingNote {
       'isSpent': isSpent,
       'isPendingSpend': isPendingSpend,
       'spendingTxid': spendingTxid,
+      'spendingHeight': spendingHeight,
       'pendingSpendingTxid': pendingSpendingTxid,
       'pendingSpendAt': pendingSpendAt?.toIso8601String(),
       'discoveredAt': discoveredAt.toIso8601String(),
@@ -262,6 +268,7 @@ class SaplingNoteStorage {
   int _lastSyncedHeight = 0;
   int _nextTreePosition = 0;
   bool _hasPersistedTreePosition = false;
+  Map<int, String> _scannedBlockHashes = {};
   int _nextDiversifierIndex = 1; // 0 is the default address
   bool _isLoaded = false;
   final Lock _lock = Lock(); // Thread safety for concurrent access
@@ -391,6 +398,10 @@ class SaplingNoteStorage {
   /// global output positions.
   bool get hasPersistedTreePosition => _hasPersistedTreePosition;
 
+  /// Block hashes recorded for scanned Sapling heights.
+  Map<int, String> get scannedBlockHashes =>
+      Map.unmodifiable(_scannedBlockHashes);
+
   /// Get the storage file path.
   Future<String> get _storagePath async {
     final dir = await getApplicationDocumentsDirectory();
@@ -449,6 +460,7 @@ class SaplingNoteStorage {
       _lastSyncedHeight = 0;
       _nextTreePosition = 0;
       _hasPersistedTreePosition = false;
+      _scannedBlockHashes = {};
       _nextDiversifierIndex = 1;
       _isLoaded = false;
       rethrow;
@@ -482,6 +494,23 @@ class SaplingNoteStorage {
     final persistedTreePosition = data['nextTreePosition'] as int?;
     _nextTreePosition = persistedTreePosition ?? fallbackTreePosition;
     _hasPersistedTreePosition = persistedTreePosition != null;
+    _scannedBlockHashes = _decodeScannedBlockHashes(data['scannedBlockHashes']);
+  }
+
+  Map<int, String> _decodeScannedBlockHashes(Object? raw) {
+    final hashes = <int, String>{};
+    if (raw is Map) {
+      for (final entry in raw.entries) {
+        final height = entry.key is int
+            ? entry.key as int
+            : int.tryParse(entry.key.toString());
+        final hash = entry.value?.toString();
+        if (height != null && hash != null && hash.isNotEmpty) {
+          hashes[height] = hash;
+        }
+      }
+    }
+    return hashes;
   }
 
   /// Save notes to storage (thread-safe public method).
@@ -504,6 +533,8 @@ class SaplingNoteStorage {
         'nextDiversifierIndex': _nextDiversifierIndex,
         'notes': _notes.map((n) => n.toJson()).toList(),
         'addresses': _addresses.map((a) => a.toJson()).toList(),
+        'scannedBlockHashes': _scannedBlockHashes
+            .map((height, hash) => MapEntry('$height', hash)),
       };
       if (_hasPersistedTreePosition) {
         data['nextTreePosition'] = _nextTreePosition;
@@ -529,6 +560,7 @@ class SaplingNoteStorage {
     _lastSyncedHeight = 0;
     _nextTreePosition = 0;
     _hasPersistedTreePosition = false;
+    _scannedBlockHashes = {};
     // Keep addresses, they're derived deterministically
     await save();
     printV('[PIVX Sapling Storage] Cleared all notes for rescan');
@@ -562,6 +594,7 @@ class SaplingNoteStorage {
       note.isSpent = true;
       note.isPendingSpend = false;
       note.spendingTxid = spendingTxid;
+      note.spendingHeight = null;
       note.pendingSpendingTxid = null;
       note.pendingSpendAt = null;
       await _save();
@@ -570,7 +603,10 @@ class SaplingNoteStorage {
 
   /// Mark notes spent by nullifier (thread-safe).
   Future<bool> markSpentByNullifier(
-      String nullifier, String spendingTxid) async {
+    String nullifier,
+    String spendingTxid, {
+    int? spendingHeight,
+  }) async {
     return await _lock.synchronized(() async {
       final note = _notes.cast<StoredSaplingNote?>().firstWhere(
             (n) => n?.nullifier == nullifier,
@@ -581,6 +617,7 @@ class SaplingNoteStorage {
         note.isSpent = true;
         note.isPendingSpend = false;
         note.spendingTxid = spendingTxid;
+        note.spendingHeight = spendingHeight;
         note.pendingSpendingTxid = null;
         note.pendingSpendAt = null;
         await _save();
@@ -648,6 +685,7 @@ class SaplingNoteStorage {
     required int lastSyncedHeight,
     required int nextTreePosition,
     required bool treePositionIsTrusted,
+    Map<int, String> blockHashes = const {},
   }) async {
     await _lock.synchronized(() async {
       _lastSyncedHeight = lastSyncedHeight;
@@ -657,6 +695,32 @@ class SaplingNoteStorage {
       if (treePositionIsTrusted) {
         _hasPersistedTreePosition = true;
       }
+      _scannedBlockHashes.addAll(blockHashes);
+      _scannedBlockHashes.removeWhere((height, _) => height > lastSyncedHeight);
+      await _save();
+    });
+  }
+
+  /// Rewind shielded state to [height] after a detected reorg.
+  ///
+  /// Notes created after the rewind point are removed. Spend markers observed
+  /// after that point are cleared so the rescan can re-apply the canonical
+  /// branch. The global tree cursor is intentionally marked untrusted because
+  /// the next sync must rely on explicit server positions after a rollback.
+  Future<void> rewindToHeight(int height) async {
+    await _lock.synchronized(() async {
+      _notes.removeWhere((note) => note.height > height);
+      for (final note in _notes) {
+        if (note.spendingHeight != null && note.spendingHeight! > height) {
+          note.isSpent = false;
+          note.spendingTxid = null;
+          note.spendingHeight = null;
+        }
+      }
+      _lastSyncedHeight = height;
+      _nextTreePosition = 0;
+      _hasPersistedTreePosition = false;
+      _scannedBlockHashes.removeWhere((blockHeight, _) => blockHeight > height);
       await _save();
     });
   }

@@ -2,11 +2,13 @@ import 'package:cake_wallet/src/screens/dashboard/widgets/sync_indicator_icon.da
 import 'package:flutter/material.dart';
 
 class StandardListStatusRow extends StatelessWidget {
-  StandardListStatusRow({required this.title, required this.value, this.status});
+  StandardListStatusRow(
+      {required this.title, required this.value, this.status});
 
   final String title;
   final String value;
-  final String? status; // waiting, action required, created, fetching, finished, success
+  final String?
+      status; // waiting, action required, created, fetching, finished, success
 
   @override
   Widget build(BuildContext context) {
@@ -14,49 +16,61 @@ class StandardListStatusRow extends StatelessWidget {
       width: double.infinity,
       color: Theme.of(context).colorScheme.surface,
       child: Padding(
-        padding: const EdgeInsets.only(left: 24, top: 16, bottom: 16, right: 24),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
-          Text(
-            title,
-            style: Theme.of(context).textTheme.bodyMedium!.copyWith(
-                  fontWeight: FontWeight.w500,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-            textAlign: TextAlign.left,
-          ),
-          Padding(
-            padding: const EdgeInsets.only(top: 12),
-            child: Container(
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(30.0),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    SyncIndicatorIcon(
-                      boolMode: false,
-                      value: status ?? value,
-                      size: 6,
+        padding:
+            const EdgeInsets.only(left: 24, top: 16, bottom: 16, right: 24),
+        child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                title,
+                style: Theme.of(context).textTheme.bodyMedium!.copyWith(
+                      fontWeight: FontWeight.w500,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
-                    SizedBox(
-                      width: 5,
-                    ),
-                    Text(
-                      value,
-                      style: Theme.of(context).textTheme.bodyMedium!.copyWith(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    )
-                  ],
-                ),
+                textAlign: TextAlign.left,
               ),
-            ),
-          )
-        ]),
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color:
+                        Theme.of(context).colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(30.0),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8.0, vertical: 4.0),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.max,
+                      children: <Widget>[
+                        SyncIndicatorIcon(
+                          boolMode: false,
+                          value: status ?? value,
+                          size: 6,
+                        ),
+                        SizedBox(
+                          width: 5,
+                        ),
+                        Flexible(
+                          child: Text(
+                            value,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium!
+                                .copyWith(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                          ),
+                        )
+                      ],
+                    ),
+                  ),
+                ),
+              )
+            ]),
       ),
     );
   }

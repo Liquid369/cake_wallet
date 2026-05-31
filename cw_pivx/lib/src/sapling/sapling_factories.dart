@@ -9,14 +9,17 @@ import 'dart:convert';
 import 'package:convert/convert.dart';
 import 'package:cw_core/encryption_file_utils.dart';
 import 'package:cw_core/utils/print_verbose.dart';
+import 'package:cw_core/utils/proxy_wrapper.dart';
 import 'package:cw_pivx/src/sapling/native_sapling_key_manager.dart';
 import 'package:cw_pivx/src/sapling/native_shield_sync_engine.dart';
 import 'package:cw_pivx/src/sapling/pivx_sapling_electrumx.dart';
+import 'package:cw_pivx/src/sapling/sapling_constants.dart';
 import 'package:cw_pivx/src/sapling/sapling_note_storage.dart';
 import 'package:cw_pivx/src/sapling/sapling_transaction_builder.dart'
     show TransparentUtxo;
 import 'package:cw_pivx/src/sapling/sapling_ffi.dart' as ffi;
 import 'package:cw_pivx/src/sapling/utils/atomic_tree_position.dart';
+import 'package:blockchain_utils/crypto/quick_crypto.dart';
 
 /// Factory for creating Sapling key managers.
 class SaplingKeyManagerFactory {
@@ -281,6 +284,19 @@ class ShieldSyncEngineWrapper {
       }
 
       final capabilities = await saplingClient.probeCapabilities();
+      if (startHeight == null &&
+          capabilities.supportsBlockHashes &&
+          lastSyncedBlock >= activationHeight) {
+        final rewindHeight = await _detectReorgRewindHeight(lastSyncedBlock);
+        if (rewindHeight != null) {
+          await storage.rewindToHeight(rewindHeight);
+          resetNativeEngine();
+          await restoreNotesFromStorage();
+          effectiveStartHeight = rewindHeight >= activationHeight
+              ? rewindHeight + 1
+              : activationHeight;
+        }
+      }
       if (!storage.hasPersistedTreePosition &&
           effectiveStartHeight > activationHeight &&
           !capabilities.supportsGlobalOutputPositions) {
@@ -342,7 +358,7 @@ class ShieldSyncEngineWrapper {
             );
           }
         },
-        onRangeComplete: (rangeEnd) async {
+        onRangeComplete: (rangeEnd, blockHashes) async {
           // Update progress even when no Sapling blocks found
           final totalRange = effectiveTargetHeight - effectiveStartHeight + 1;
           final safeTotalRange = totalRange < 1 ? 1 : totalRange;
@@ -361,6 +377,7 @@ class ShieldSyncEngineWrapper {
             lastSyncedHeight: rangeEnd,
             nextTreePosition: _treePosition.current,
             treePositionIsTrusted: _treePositionIsTrusted,
+            blockHashes: blockHashes,
           );
           _engine.nativeEngine.setSyncHeight(rangeEnd);
         },
@@ -423,7 +440,11 @@ class ShieldSyncEngineWrapper {
       for (final spend in tx.spends) {
         nativeEngine.checkNullifier(spend.nullifierBytes);
         // Also check if this nullifier matches any of our stored notes
-        await storage.markSpentByNullifier(spend.nullifier, tx.txid);
+        await storage.markSpentByNullifier(
+          spend.nullifier,
+          tx.txid,
+          spendingHeight: block.height,
+        );
       }
     }
 
@@ -517,8 +538,66 @@ class ShieldSyncEngineWrapper {
       lastSyncedHeight: block.height,
       nextTreePosition: currentPosition,
       treePositionIsTrusted: _treePositionIsTrusted,
+      blockHashes: block.hash.isEmpty
+          ? const {}
+          : <int, String>{block.height: block.hash},
     );
     nativeEngine.setSyncHeight(block.height);
+  }
+
+  Future<int?> _detectReorgRewindHeight(int lastSyncedBlock) async {
+    final activationHeight = saplingClient.activationHeight;
+    if (lastSyncedBlock < activationHeight) return null;
+
+    final compareStart = lastSyncedBlock - 99 > activationHeight
+        ? lastSyncedBlock - 99
+        : activationHeight;
+    final range = await saplingClient.getBlockRangeResult(
+      compareStart,
+      endHeight: lastSyncedBlock,
+    );
+    if (range.blockHashes.isEmpty) return null;
+
+    var firstMismatch = 0;
+    for (var height = compareStart; height <= lastSyncedBlock; height++) {
+      final localHash = storage.scannedBlockHashes[height];
+      final serverHash = range.blockHashes[height];
+      if (localHash == null || serverHash == null) {
+        continue;
+      }
+      if (localHash.toLowerCase() != serverHash.toLowerCase()) {
+        firstMismatch = height;
+        break;
+      }
+    }
+
+    if (firstMismatch == 0) {
+      await storage.completeSyncRange(
+        lastSyncedHeight: lastSyncedBlock,
+        nextTreePosition: storage.nextTreePosition,
+        treePositionIsTrusted: storage.hasPersistedTreePosition,
+        blockHashes: range.blockHashes,
+      );
+      return null;
+    }
+
+    var rewindHeight = firstMismatch - 1;
+    for (var height = firstMismatch - 1; height >= activationHeight; height--) {
+      final localHash = storage.scannedBlockHashes[height];
+      final serverHash = range.blockHashes[height];
+      if (localHash != null &&
+          serverHash != null &&
+          localHash.toLowerCase() == serverHash.toLowerCase()) {
+        rewindHeight = height;
+        break;
+      }
+    }
+    if (rewindHeight < activationHeight) {
+      rewindHeight = activationHeight - 1;
+    }
+
+    printV('[PIVX Sapling] Reorg detected; rewinding shielded sync state');
+    return rewindHeight;
   }
 
   /// Check multiple nullifiers for spent status.
@@ -611,14 +690,7 @@ class SaplingTransactionBuilderWrapper {
   /// generating Groth16 proofs. They need to be downloaded once and
   /// stored locally.
   Future<void> loadProvingParams({required String path}) async {
-    // Check if params exist at path
-    final spendPath = '$path/sapling-spend.params';
-    final outputPath = '$path/sapling-output.params';
-
-    final spendFile = File(spendPath);
-    final outputFile = File(outputPath);
-
-    if (!await spendFile.exists() || !await outputFile.exists()) {
+    if (!await hasLocalProvingParams(path)) {
       throw Exception('Proving parameters not found at $path. '
           'Call downloadProvingParams first.');
     }
@@ -638,10 +710,16 @@ class SaplingTransactionBuilderWrapper {
     final spendPath = '$path/sapling-spend.params';
     final outputPath = '$path/sapling-output.params';
 
-    final spendFile = File(spendPath);
-    final outputFile = File(outputPath);
-
-    return await spendFile.exists() && await outputFile.exists();
+    return await _verifyParamFile(
+          file: File(spendPath),
+          expectedSize: SaplingParams.spendParamsSize,
+          expectedHash: SaplingParams.spendParamsHash,
+        ) &&
+        await _verifyParamFile(
+          file: File(outputPath),
+          expectedSize: SaplingParams.outputParamsSize,
+          expectedHash: SaplingParams.outputParamsHash,
+        );
   }
 
   /// Download proving parameters from PIVX servers.
@@ -652,14 +730,8 @@ class SaplingTransactionBuilderWrapper {
     required String path,
     required void Function(double) onProgress,
   }) async {
-    // PIVX Sapling proving params URLs (hosted by Duddino)
-    const spendUrl = 'https://duddino.com/sapling-spend.params';
-    const outputUrl = 'https://duddino.com/sapling-output.params';
-
-    // Expected sizes for progress tracking
-    const spendSize = 47958503; // ~47.5 MB
-    const outputSize = 3592860; // ~3.5 MB
-    const totalSize = spendSize + outputSize;
+    const totalSize =
+        SaplingParams.spendParamsSize + SaplingParams.outputParamsSize;
 
     // Ensure directory exists
     final dir = Directory(path);
@@ -667,78 +739,146 @@ class SaplingTransactionBuilderWrapper {
       await dir.create(recursive: true);
     }
 
-    final spendPath = '$path/sapling-spend.params';
-    final outputPath = '$path/sapling-output.params';
-
     var downloadedBytes = 0;
 
-    // Download spend params
-    final spendFile = File(spendPath);
-    if (!await spendFile.exists()) {
-      await _downloadFile(
-        url: spendUrl,
-        destination: spendPath,
-        onProgress: (bytes) {
-          downloadedBytes = bytes;
-          onProgress(downloadedBytes / totalSize);
-        },
-      );
-    } else {
-      downloadedBytes = spendSize;
-      onProgress(downloadedBytes / totalSize);
-    }
+    await _downloadParamIfNeeded(
+      url: SaplingParams.spendParamsUrl,
+      destination: '$path/${SaplingParams.spendParamsFileName}',
+      expectedSize: SaplingParams.spendParamsSize,
+      expectedHash: SaplingParams.spendParamsHash,
+      onDownloaded: (bytes) {
+        downloadedBytes = bytes;
+        onProgress(downloadedBytes / totalSize);
+      },
+    );
+    downloadedBytes = SaplingParams.spendParamsSize;
+    onProgress(downloadedBytes / totalSize);
 
-    // Download output params
-    final outputFile = File(outputPath);
-    if (!await outputFile.exists()) {
-      await _downloadFile(
-        url: outputUrl,
-        destination: outputPath,
-        onProgress: (bytes) {
-          onProgress((spendSize + bytes) / totalSize);
-        },
-      );
-    }
+    await _downloadParamIfNeeded(
+      url: SaplingParams.outputParamsUrl,
+      destination: '$path/${SaplingParams.outputParamsFileName}',
+      expectedSize: SaplingParams.outputParamsSize,
+      expectedHash: SaplingParams.outputParamsHash,
+      onDownloaded: (bytes) {
+        onProgress((downloadedBytes + bytes) / totalSize);
+      },
+    );
 
     onProgress(1.0);
     _provingParamsPath = path;
   }
 
-  /// Download a file with progress tracking.
-  Future<void> _downloadFile({
+  Future<void> _downloadParamIfNeeded({
     required String url,
     required String destination,
+    required int expectedSize,
+    required String expectedHash,
+    required void Function(int bytesDownloaded) onDownloaded,
+  }) async {
+    final destinationFile = File(destination);
+    if (await _verifyParamFile(
+      file: destinationFile,
+      expectedSize: expectedSize,
+      expectedHash: expectedHash,
+    )) {
+      onDownloaded(expectedSize);
+      return;
+    }
+
+    if (await destinationFile.exists()) {
+      await destinationFile.delete();
+    }
+
+    await _downloadFileAtomically(
+      url: url,
+      destination: destination,
+      expectedSize: expectedSize,
+      expectedHash: expectedHash,
+      onProgress: onDownloaded,
+    );
+  }
+
+  Future<bool> _verifyParamFile({
+    required File file,
+    required int expectedSize,
+    required String expectedHash,
+  }) async {
+    try {
+      if (!await file.exists()) return false;
+
+      final size = await file.length();
+      if (size != expectedSize) return false;
+
+      final bytes = await file.readAsBytes();
+      final hash = hex.encode(QuickCrypto.sha256Hash(bytes));
+      return hash == expectedHash;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Download a file through Cake's proxy/Tor wrapper, verify it, then rename.
+  Future<void> _downloadFileAtomically({
+    required String url,
+    required String destination,
+    required int expectedSize,
+    required String expectedHash,
     required void Function(int bytesDownloaded) onProgress,
   }) async {
-    final client = HttpClient();
-    try {
-      final request = await client.getUrl(Uri.parse(url));
-      final response = await request.close();
+    final destinationFile = File(destination);
+    final tempFile = File('$destination.download');
+    final uri = Uri.parse(url);
 
-      if (response.statusCode != 200) {
-        throw Exception('Failed to download $url: ${response.statusCode}');
-      }
-
-      final file = File(destination);
-      final sink = file.openWrite();
-      var downloaded = 0;
-
-      await for (final chunk in response) {
-        sink.add(chunk);
-        downloaded += chunk.length;
-        onProgress(downloaded);
-      }
-
-      await sink.close();
-    } finally {
-      client.close();
+    if (await tempFile.exists()) {
+      await tempFile.delete();
     }
+
+    final response = await ProxyWrapper().get(clearnetUri: uri);
+    if (response.statusCode != 200) {
+      throw Exception(
+          'PIVX Sapling proving parameter download failed with HTTP ${response.statusCode}');
+    }
+
+    final bytes = response.bodyBytes;
+    onProgress(bytes.length);
+
+    if (bytes.length != expectedSize) {
+      throw Exception(
+          'PIVX Sapling proving parameter size mismatch after download');
+    }
+
+    final hash = hex.encode(QuickCrypto.sha256Hash(bytes));
+    if (hash != expectedHash) {
+      throw Exception(
+          'PIVX Sapling proving parameter hash mismatch after download');
+    }
+
+    await tempFile.writeAsBytes(bytes, flush: true);
+
+    if (!await _verifyParamFile(
+      file: tempFile,
+      expectedSize: expectedSize,
+      expectedHash: expectedHash,
+    )) {
+      await tempFile.delete();
+      throw Exception(
+          'PIVX Sapling proving parameter verification failed after write');
+    }
+
+    if (await destinationFile.exists()) {
+      await destinationFile.delete();
+    }
+    await tempFile.rename(destination);
   }
 
   /// Build a shielded-to-shielded transaction.
   Future<SaplingTransactionResult> buildTransaction({
     required SaplingTransactionOptions options,
   }) async {
+    if (options.amount < PivxFeePolicy.shieldedDustThreshold) {
+      throw Exception('Amount below PIVX shielded dust threshold');
+    }
+
     // Validate we have sufficient balance
     if (syncEngine.balance < options.amount) {
       throw Exception('Insufficient shielded balance');
@@ -773,22 +913,26 @@ class SaplingTransactionBuilderWrapper {
       throw Exception('No spendable notes available');
     }
 
-    // Select notes for spending
-    final selectedNotes = _selectNotes(allNotes, options.amount);
+    final selectedNotes = selectNotesForAmount(
+      allNotes,
+      options.amount,
+      spendAll: options.spendAllShieldedInputs,
+    );
     if (selectedNotes.isEmpty) {
       throw Exception('Could not select sufficient notes');
     }
 
-    // Calculate fee (1 spend per note + 2 outputs = recipient + change)
-    final fee = ffi.estimateFee(
-      numSpends: selectedNotes.length,
-      numOutputs: 2,
-    );
-
-    // Verify we have enough after fee
     final totalInput =
         selectedNotes.fold<int>(0, (sum, n) => sum + (n['value'] as int));
-    if (totalInput < options.amount + fee) {
+    final spendPlan = planShieldedSpend(
+      totalInput: totalInput,
+      amount: options.amount,
+      saplingInputs: selectedNotes.length,
+    );
+    final fee = spendPlan.fee;
+
+    // Verify we have enough after fee
+    if (!spendPlan.canBuild || totalInput < options.amount + fee) {
       throw Exception('Insufficient balance after fee');
     }
 
@@ -846,14 +990,19 @@ class SaplingTransactionBuilderWrapper {
     );
   }
 
-  /// Select notes to cover the required amount.
-  List<Map<String, dynamic>> _selectNotes(
+  /// Select notes to cover the required amount plus its fee.
+  static List<Map<String, dynamic>> selectNotesForAmount(
     List<Map<String, dynamic>> allNotes,
-    int amount,
-  ) {
+    int amount, {
+    bool spendAll = false,
+  }) {
     // Sort by value descending to minimize number of inputs
     final sorted = List<Map<String, dynamic>>.from(allNotes)
       ..sort((a, b) => (b['value'] as int).compareTo(a['value'] as int));
+
+    if (spendAll) {
+      return sorted;
+    }
 
     final selected = <Map<String, dynamic>>[];
     var total = 0;
@@ -861,10 +1010,67 @@ class SaplingTransactionBuilderWrapper {
     for (final note in sorted) {
       selected.add(note);
       total += note['value'] as int;
-      if (total >= amount) break;
+      if (planShieldedSpend(
+        totalInput: total,
+        amount: amount,
+        saplingInputs: selected.length,
+      ).canBuild) {
+        break;
+      }
     }
 
     return selected;
+  }
+
+  static ShieldedSpendPlan planShieldedSpend({
+    required int totalInput,
+    required int amount,
+    required int saplingInputs,
+  }) {
+    final noChangeFee = PivxFeePolicy.saplingFee(
+      saplingInputs: saplingInputs,
+      saplingOutputs: 1,
+    );
+
+    if (totalInput < amount + noChangeFee) {
+      return ShieldedSpendPlan(fee: noChangeFee, change: 0, canBuild: false);
+    }
+
+    final noChangeRemainder = totalInput - amount - noChangeFee;
+    if (noChangeRemainder <= PivxFeePolicy.shieldedDustThreshold) {
+      return ShieldedSpendPlan(
+        fee: noChangeFee + noChangeRemainder,
+        change: 0,
+        canBuild: true,
+      );
+    }
+
+    final withChangeFee = PivxFeePolicy.saplingFee(
+      saplingInputs: saplingInputs,
+      saplingOutputs: 2,
+    );
+    if (totalInput < amount + withChangeFee) {
+      return ShieldedSpendPlan(
+        fee: withChangeFee,
+        change: 0,
+        canBuild: false,
+      );
+    }
+
+    final change = totalInput - amount - withChangeFee;
+    if (change <= PivxFeePolicy.shieldedDustThreshold) {
+      return ShieldedSpendPlan(
+        fee: withChangeFee + change,
+        change: 0,
+        canBuild: true,
+      );
+    }
+
+    return ShieldedSpendPlan(
+      fee: withChangeFee,
+      change: change,
+      canBuild: true,
+    );
   }
 
   /// Fetch merkle witnesses for notes from ElectrumX.
@@ -975,13 +1181,27 @@ class SaplingTransactionOptions {
   final int amount;
   final String? memo;
   final bool useShieldedInputs;
+  final bool spendAllShieldedInputs;
 
   SaplingTransactionOptions({
     required this.toAddress,
     required this.amount,
     this.memo,
     this.useShieldedInputs = true,
+    this.spendAllShieldedInputs = false,
   });
+}
+
+class ShieldedSpendPlan {
+  ShieldedSpendPlan({
+    required this.fee,
+    required this.change,
+    required this.canBuild,
+  });
+
+  final int fee;
+  final int change;
+  final bool canBuild;
 }
 
 /// Transaction result.

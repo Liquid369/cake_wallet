@@ -15,19 +15,26 @@ class CwPivxPlugin: FlutterPlugin, MethodCallHandler {
     /// This local reference serves to register the plugin with the Flutter Engine and unregister it
     /// when the Flutter Engine is detached from the Activity
     private lateinit var channel : MethodChannel
+    private var nativeLibraryLoaded = false
+    private var nativeLibraryError: String? = null
 
     override fun onAttachedToEngine(@NonNull flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         channel = MethodChannel(flutterPluginBinding.binaryMessenger, "cw_pivx")
         channel.setMethodCallHandler(this)
         
-        // Load the native Sapling library
-        System.loadLibrary("cw_pivx_sapling")
+        loadSaplingNativeLibrary()
     }
 
     override fun onMethodCall(@NonNull call: MethodCall, @NonNull result: Result) {
         when (call.method) {
             "getPlatformVersion" -> {
                 result.success("Android ${android.os.Build.VERSION.RELEASE}")
+            }
+            "isSaplingNativeLoaded" -> {
+                result.success(nativeLibraryLoaded)
+            }
+            "getSaplingNativeLoadError" -> {
+                result.success(nativeLibraryError)
             }
             else -> {
                 result.notImplemented()
@@ -37,5 +44,19 @@ class CwPivxPlugin: FlutterPlugin, MethodCallHandler {
 
     override fun onDetachedFromEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
+    }
+
+    private fun loadSaplingNativeLibrary() {
+        try {
+            System.loadLibrary("cw_pivx_sapling")
+            nativeLibraryLoaded = true
+            nativeLibraryError = null
+        } catch (error: UnsatisfiedLinkError) {
+            nativeLibraryLoaded = false
+            nativeLibraryError = error.message ?: error.javaClass.simpleName
+        } catch (error: SecurityException) {
+            nativeLibraryLoaded = false
+            nativeLibraryError = error.message ?: error.javaClass.simpleName
+        }
     }
 }

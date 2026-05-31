@@ -41,14 +41,19 @@ class $BackupService {
   final KeyService keyService;
   List<WalletInfo> correctWallets;
 
-
-  Future<void> importBackupV1(Uint8List data, String password, {required String nonce}) async {
+  Future<void> importBackupV1(Uint8List data, String password,
+      {required String nonce}) async {
     final appDir = await getAppDir();
     final decryptedData = await _decryptV1(data, password, nonce);
     final zip = ZipDecoder().decodeBytes(decryptedData);
 
+    outer:
     for (var file in zip.files) {
       final filename = file.name;
+      if (shouldIgnoreBackupPath(filename)) {
+        printV("ignoring backup file: $filename");
+        continue outer;
+      }
 
       if (file.isFile) {
         final content = file.content as List<int>;
@@ -58,7 +63,7 @@ class $BackupService {
       } else {
         Directory('${appDir.path}/' + filename)..create(recursive: true);
       }
-    };
+    }
 
     await verifyWallets();
     await _importKeychainDumpV1(password, nonce: nonce);
@@ -74,6 +79,23 @@ class $BackupService {
     ".lock",
   ];
 
+  static bool shouldIgnoreBackupPath(String filename) {
+    final normalized = filename.replaceAll('\\', '/');
+
+    for (var ignore in ignoreFiles) {
+      if (normalized.endsWith(ignore) && !normalized.contains("wallets/")) {
+        return true;
+      }
+    }
+
+    final basename = normalized.split('/').last;
+    return basename == 'pivx_sapling_params' ||
+        normalized.contains('/pivx_sapling_params/') ||
+        (basename.startsWith('sapling-') &&
+            basename.endsWith('.params.download')) ||
+        (basename.startsWith('pivx_sapling_') && basename.endsWith('.json'));
+  }
+
   Future<void> importBackupV2(Uint8List data, String password) async {
     final appDir = await getAppDir();
     final decryptedData = await decryptV2(data, password);
@@ -82,11 +104,9 @@ class $BackupService {
     outer:
     for (var file in zip.files) {
       final filename = file.name;
-      for (var ignore in ignoreFiles) {
-        if (filename.endsWith(ignore) && !filename.contains("wallets/")) {
-          printV("ignoring backup file: $filename");
-          continue outer;
-        }
+      if (shouldIgnoreBackupPath(filename)) {
+        printV("ignoring backup file: $filename");
+        continue outer;
       }
       printV("restoring: $filename");
       if (file.isFile) {
@@ -100,7 +120,7 @@ class $BackupService {
           dir.createSync(recursive: true);
         }
       }
-    };
+    }
 
     await verifyWallets();
     await importKeychainDumpV2(password);
@@ -110,7 +130,9 @@ class $BackupService {
 
   Future<void> verifyWallets() async {
     await performHiveMigration(); // for backups made before sqlite migration
-    correctWallets = (await WalletInfo.getAll()).where((info) => availableWalletTypes.contains(info.type)).toList();
+    correctWallets = (await WalletInfo.getAll())
+        .where((info) => availableWalletTypes.contains(info.type))
+        .toList();
 
     if (correctWallets.isEmpty) {
       printV('Correct wallets not detected');
@@ -119,24 +141,25 @@ class $BackupService {
 
   Future<void> importTransactionDescriptionDump() async {
     final appDir = await getAppDir();
-    final transactionDescriptionFile = File('${appDir.path}/~_transaction_descriptions_dump');
+    final transactionDescriptionFile =
+        File('${appDir.path}/~_transaction_descriptions_dump');
 
     if (!transactionDescriptionFile.existsSync()) {
       return;
     }
 
-    final jsonData =
-        json.decode(transactionDescriptionFile.readAsStringSync()) as Map<String, dynamic>;
-    final descriptionsMap = jsonData.map((key, value) =>
-        MapEntry(key, TransactionDescription.fromJson(value as Map<String, dynamic>)));
+    final jsonData = json.decode(transactionDescriptionFile.readAsStringSync())
+        as Map<String, dynamic>;
+    final descriptionsMap = jsonData.map((key, value) => MapEntry(
+        key, TransactionDescription.fromJson(value as Map<String, dynamic>)));
     var box = transactionDescriptionBox;
     if (!box.isOpen) {
-      final transactionDescriptionsBoxKey =
-        await getEncryptionKey(secureStorage: _secureStorage, forKey: TransactionDescription.boxKey);
+      final transactionDescriptionsBoxKey = await getEncryptionKey(
+          secureStorage: _secureStorage, forKey: TransactionDescription.boxKey);
       box = await CakeHive.openBox<TransactionDescription>(
-        TransactionDescription.boxName,
-        encryptionKey: transactionDescriptionsBoxKey);
-      }
+          TransactionDescription.boxName,
+          encryptionKey: transactionDescriptionsBoxKey);
+    }
     await box.putAll(descriptionsMap);
   }
 
@@ -148,9 +171,11 @@ class $BackupService {
       return;
     }
 
-    final data = json.decode(preferencesFile.readAsStringSync()) as Map<String, dynamic>;
+    final data =
+        json.decode(preferencesFile.readAsStringSync()) as Map<String, dynamic>;
 
-    try { // shouldn't throw an error but just in case, so it doesn't stop the backup restore
+    try {
+      // shouldn't throw an error but just in case, so it doesn't stop the backup restore
       for (var entry in data.entries) {
         String key = entry.key;
         dynamic value = entry.value;
@@ -168,7 +193,8 @@ class $BackupService {
           await sharedPreferences.setStringList(key, value);
         } else {
           if (kDebugMode) {
-            printV('Skipping individual save for key "$key": Unsupported type (${value.runtimeType}). Value: $value');
+            printV(
+                'Skipping individual save for key "$key": Unsupported type (${value.runtimeType}). Value: $value');
           }
         }
       }
@@ -177,37 +203,38 @@ class $BackupService {
     String currentWalletName = data[PreferencesKey.currentWalletName] as String;
     int currentWalletType = data[PreferencesKey.currentWalletType] as int;
 
-    final isCorrectCurrentWallet = correctWallets
-        .any((info) => info.name == currentWalletName && info.type.index == currentWalletType);
+    final isCorrectCurrentWallet = correctWallets.any((info) =>
+        info.name == currentWalletName && info.type.index == currentWalletType);
 
     try {
       if (!isCorrectCurrentWallet) {
         currentWalletName = correctWallets.first.name;
         currentWalletType = serializeToInt(correctWallets.first.type);
       }
-    } catch (e) {
-
-    }
+    } catch (e) {}
 
     if (DeviceInfo.instance.isDesktop) {
-      await sharedPreferences.setInt(PreferencesKey.currentTheme, ThemeList.darkTheme.raw);
+      await sharedPreferences.setInt(
+          PreferencesKey.currentTheme, ThemeList.darkTheme.raw);
     }
 
     await preferencesFile.delete();
   }
 
   Future<void> _importKeychainDumpV1(String password,
-      {required String nonce, String keychainSalt = secrets.backupKeychainSalt}) async {
+      {required String nonce,
+      String keychainSalt = secrets.backupKeychainSalt}) async {
     final appDir = await getAppDir();
     final keychainDumpFile = File('${appDir.path}/~_keychain_dump');
-    final decryptedKeychainDumpFileData =
-        await _decryptV1(keychainDumpFile.readAsBytesSync(), '$keychainSalt$password', nonce);
-    final keychainJSON =
-        json.decode(utf8.decode(decryptedKeychainDumpFileData)) as Map<String, dynamic>;
+    final decryptedKeychainDumpFileData = await _decryptV1(
+        keychainDumpFile.readAsBytesSync(), '$keychainSalt$password', nonce);
+    final keychainJSON = json.decode(utf8.decode(decryptedKeychainDumpFileData))
+        as Map<String, dynamic>;
     final keychainWalletsInfo = keychainJSON['wallets'] as List;
     final decodedPin = keychainJSON['pin'] as String;
     final pinCodeKey = generateStoreKeyFor(key: SecretStoreKey.pinCodePassword);
-    final backupPasswordKey = generateStoreKeyFor(key: SecretStoreKey.backupPassword);
+    final backupPasswordKey =
+        generateStoreKeyFor(key: SecretStoreKey.backupPassword);
     final backupPassword = keychainJSON[backupPasswordKey] as String;
 
     await _secureStorage.write(key: backupPasswordKey, value: backupPassword);
@@ -217,7 +244,8 @@ class $BackupService {
       await importWalletKeychainInfo(info);
     });
 
-    await _secureStorage.write(key: pinCodeKey, value: encodedPinCode(pin: decodedPin));
+    await _secureStorage.write(
+        key: pinCodeKey, value: encodedPinCode(pin: decodedPin));
 
     keychainDumpFile.deleteSync();
   }
@@ -226,12 +254,13 @@ class $BackupService {
       {String keychainSalt = secrets.backupKeychainSalt}) async {
     final appDir = await getAppDir();
     final keychainDumpFile = File('${appDir.path}/~_keychain_dump');
-    final decryptedKeychainDumpFileData =
-        await decryptV2(keychainDumpFile.readAsBytesSync(), '$keychainSalt$password');
-    final keychainJSON =
-        json.decode(utf8.decode(decryptedKeychainDumpFileData)) as Map<String, dynamic>;
+    final decryptedKeychainDumpFileData = await decryptV2(
+        keychainDumpFile.readAsBytesSync(), '$keychainSalt$password');
+    final keychainJSON = json.decode(utf8.decode(decryptedKeychainDumpFileData))
+        as Map<String, dynamic>;
     final keychainWalletsInfo = keychainJSON['wallets'] as List;
-    final backupPasswordKey = generateStoreKeyFor(key: SecretStoreKey.backupPassword);
+    final backupPasswordKey =
+        generateStoreKeyFor(key: SecretStoreKey.backupPassword);
     final backupPassword = keychainJSON[backupPasswordKey] as String;
 
     await _secureStorage.write(key: backupPasswordKey, value: backupPassword);
@@ -272,13 +301,14 @@ class $BackupService {
 
   Future<Uint8List> exportKeychainDumpV2(String password,
       {String keychainSalt = secrets.backupKeychainSalt}) async {
-    final key = generateStoreKeyFor(key: SecretStoreKey.pinCodePassword);
-    final wallets = await Future.wait((await WalletInfo.getAll()).map((walletInfo) async {
+    final wallets =
+        await Future.wait((await WalletInfo.getAll()).map((walletInfo) async {
       try {
         return {
           'name': walletInfo.name,
           'type': walletInfo.type.toString(),
-          'password': await keyService.getWalletPassword(walletName: walletInfo.name),
+          'password':
+              await keyService.getWalletPassword(walletName: walletInfo.name),
           'hardwareWalletType': walletInfo.hardwareWalletType?.index,
         };
       } catch (e) {
@@ -290,11 +320,16 @@ class $BackupService {
         };
       }
     }));
-    final backupPasswordKey = generateStoreKeyFor(key: SecretStoreKey.backupPassword);
+    final backupPasswordKey =
+        generateStoreKeyFor(key: SecretStoreKey.backupPassword);
     final backupPassword = await _secureStorage.read(key: backupPasswordKey);
-    final data = utf8.encode(
-        json.encode({'wallets': wallets, backupPasswordKey: backupPassword, '_all': await _secureStorage.readAll()}));
-    final encrypted = await _encryptV2(Uint8List.fromList(data), '$keychainSalt$password');
+    final data = utf8.encode(json.encode({
+      'wallets': wallets,
+      backupPasswordKey: backupPassword,
+      '_all': await _secureStorage.readAll()
+    }));
+    final encrypted =
+        await _encryptV2(Uint8List.fromList(data), '$keychainSalt$password');
 
     return encrypted;
   }
@@ -308,7 +343,9 @@ class $BackupService {
 
   Future<String> exportPreferencesJSON() async {
     final preferences = <String, dynamic>{};
-    sharedPreferences.getKeys().forEach((key) => preferences[key] = sharedPreferences.get(key));
+    sharedPreferences
+        .getKeys()
+        .forEach((key) => preferences[key] = sharedPreferences.get(key));
 
     _excludedPrefsKeys.forEach((key) => preferences.remove(key));
 
@@ -322,13 +359,17 @@ class $BackupService {
     return Uint8List.fromList(bytes);
   }
 
-  Future<Uint8List> _decryptV1(Uint8List data, String secretKeySource, String nonceBase64,
+  Future<Uint8List> _decryptV1(
+      Uint8List data, String secretKeySource, String nonceBase64,
       {int macLength = 16}) async {
-    final secretKeyHash = await Cryptography.instance.sha256().hash(utf8.encode(secretKeySource));
+    final secretKeyHash =
+        await Cryptography.instance.sha256().hash(utf8.encode(secretKeySource));
     final secretKey = SecretKey(secretKeyHash.bytes);
     final nonce = base64.decode(nonceBase64).toList();
-    final box = SecretBox(Uint8List.sublistView(data, 0, data.lengthInBytes - macLength).toList(),
-        nonce: nonce, mac: Mac(Uint8List.sublistView(data, data.lengthInBytes - macLength)));
+    final box = SecretBox(
+        Uint8List.sublistView(data, 0, data.lengthInBytes - macLength).toList(),
+        nonce: nonce,
+        mac: Mac(Uint8List.sublistView(data, data.lengthInBytes - macLength)));
     final plainData = await cipher.decrypt(box, secretKey: secretKey);
     return Uint8List.fromList(plainData);
   }

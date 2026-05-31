@@ -13,12 +13,14 @@ import 'package:cw_bitcoin/electrum_wallet_snapshot.dart';
 import 'package:cw_core/crypto_currency.dart';
 import 'package:cw_core/encryption_file_utils.dart';
 import 'package:cw_core/pending_transaction.dart';
+import 'package:cw_core/transaction_direction.dart';
 import 'package:cw_core/transaction_priority.dart';
 import 'package:cw_core/unspent_coin_type.dart';
 import 'package:cw_core/unspent_coins_info.dart';
 import 'package:cw_core/utils/print_verbose.dart';
 import 'package:cw_core/wallet_info.dart';
 import 'package:cw_core/wallet_keys_file.dart';
+import 'package:cw_core/wallet_type.dart';
 import 'package:cw_core/sync_status.dart' as core_sync;
 import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
@@ -405,6 +407,105 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     });
   }
 
+  Future<void> _refreshShieldedTransactionHistory() async {
+    if (_shieldSyncEngine == null) return;
+
+    final storage = _shieldSyncEngine!.storage;
+    final currentHeight = storage.lastSyncedHeight;
+    final byTxid = <String, List<StoredSaplingNote>>{};
+    for (final note in storage.notes) {
+      byTxid.putIfAbsent(note.txid, () => <StoredSaplingNote>[]).add(note);
+    }
+
+    var changed = false;
+    final staleShieldedReceives = transactionHistory.transactions.entries
+        .where((entry) =>
+            entry.value.additionalInfo['isPivxShielded'] == true &&
+            entry.value.additionalInfo['pivxRoute'] == 'z-receive' &&
+            !byTxid.containsKey(entry.key))
+        .map((entry) => entry.key)
+        .toList();
+    for (final txid in staleShieldedReceives) {
+      transactionHistory.transactions.remove(txid);
+      changed = true;
+    }
+
+    for (final entry in byTxid.entries) {
+      final notes = entry.value;
+      final amount = notes.fold<int>(0, (sum, note) => sum + note.value);
+      final height =
+          notes.map((note) => note.height).reduce((a, b) => a < b ? a : b);
+      final confirmations = height > 0 && currentHeight >= height
+          ? currentHeight - height + 1
+          : 0;
+      final existing = transactionHistory.transactions[entry.key];
+
+      if (existing == null) {
+        transactionHistory.addOne(ElectrumTransactionInfo(
+          WalletType.pivx,
+          id: entry.key,
+          height: height,
+          amount: amount,
+          fee: 0,
+          direction: TransactionDirection.incoming,
+          isPending: confirmations <
+              PivxShieldedConfirmationPolicy.receiveConfirmations,
+          date: notes
+              .map((note) => note.discoveredAt)
+              .reduce((a, b) => a.isBefore(b) ? a : b),
+          confirmations: confirmations,
+          additionalInfo: {
+            'isPivxShielded': true,
+            'pivxPool': 'shielded',
+            'pivxRoute': 'z-receive',
+            'pivxRequiredConfirmations':
+                PivxShieldedConfirmationPolicy.receiveConfirmations,
+          },
+        ));
+        changed = true;
+      } else if (existing.additionalInfo['isPivxShielded'] == true) {
+        existing.height = height;
+        existing.amount = amount;
+        existing.confirmations = confirmations;
+        existing.isPending =
+            confirmations < PivxShieldedConfirmationPolicy.receiveConfirmations;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await transactionHistory.save();
+    }
+  }
+
+  Future<void> _recordPendingShieldedOutgoing({
+    required String txid,
+    required int amount,
+    required int fee,
+    required String toAddress,
+  }) async {
+    transactionHistory.addOne(ElectrumTransactionInfo(
+      WalletType.pivx,
+      id: txid,
+      height: 0,
+      amount: amount,
+      fee: fee,
+      direction: TransactionDirection.outgoing,
+      isPending: true,
+      date: DateTime.now(),
+      confirmations: 0,
+      to: toAddress,
+      additionalInfo: {
+        'isPivxShielded': true,
+        'pivxPool': 'shielded',
+        'pivxRoute': 'z-to-z',
+        'pivxRequiredConfirmations':
+            PivxShieldedConfirmationPolicy.receiveConfirmations,
+      },
+    ));
+    await transactionHistory.save();
+  }
+
   Future<void> _ensureShieldSyncEngineInitialized() async {
     await initializeSapling();
 
@@ -562,6 +663,7 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
 
       // Final reconciliation after sync completes
       await _reconcileShieldedBalance();
+      await _refreshShieldedTransactionHistory();
       saplingRpcAvailable = true;
       lastShieldSyncError = null;
     } catch (e) {
@@ -646,6 +748,7 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     required int amount,
     String? memo,
     bool useShieldedInputs = true,
+    bool spendAllShieldedInputs = false,
   }) async {
     await _ensureShieldSyncEngineInitialized();
     await _ensureSaplingRpcSupportsShieldedSend();
@@ -672,6 +775,7 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
         amount: amount,
         memo: memo,
         useShieldedInputs: useShieldedInputs,
+        spendAllShieldedInputs: spendAllShieldedInputs,
       );
 
       return await _saplingTxBuilder!.buildTransaction(options: options);
@@ -999,12 +1103,10 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     }
   }
 
-  /// PIVX dust threshold based on dustRelayFee of 30000 sat/kB.
-  /// For a standard output (34 bytes) + input (148 bytes) = 182 bytes
-  /// dustThreshold = 30000 * 182 / 1000 ≈ 5460 satoshis
-  /// We use 10000 satoshis (0.0001 PIVX) as a safe minimum.
+  /// PIVX transparent dust threshold based on PIVX Core dustRelayFee
+  /// of 30,000 zatoshis/kB and a typical 182-byte output spend cost.
   @override
-  int get networkDustAmount => 10000;
+  int get networkDustAmount => PivxFeePolicy.transparentDustThreshold;
 
   /// Estimate PIVX transaction size.
   /// Similar to Bitcoin P2PKH transactions:
@@ -1012,7 +1114,7 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
   /// - Each output: ~34 bytes
   /// - Fixed overhead: ~10 bytes
   static int estimatedPivxTransactionSize(int inputsCount, int outputsCounts) =>
-      inputsCount * 148 + outputsCounts * 34 + 10;
+      PivxFeePolicy.transparentTxSize(inputsCount, outputsCounts);
 
   @override
   int feeAmountForPriority(
@@ -1222,8 +1324,8 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     final output = credentials.outputs.first;
     final toAddress =
         output.isParsedAddress ? output.extractedAddress! : output.address;
-    final amount = output.formattedCryptoAmount!;
     final memo = output.memo;
+    final isSendAll = output.sendAll;
 
     final coinType = credentials.coinTypeToSpendFrom;
     if (coinType != UnspentCoinType.sapling) {
@@ -1233,6 +1335,10 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
 
     // Initialize sapling to get accurate balances
     await initializeSapling();
+    await _ensureShieldSyncEngineInitialized();
+
+    final amount =
+        isSendAll ? _shieldedSendAllAmount() : output.formattedCryptoAmount!;
 
     // Check if we have sufficient shielded balance
     final hasShieldedFunds = shieldedBalance >= amount;
@@ -1244,6 +1350,7 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
         amount: amount,
         memo: memo,
         useShieldedInputs: true,
+        spendAllShieldedInputs: isSendAll,
       );
 
       return PendingPivxShieldedTransaction(
@@ -1252,6 +1359,13 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
         amount: amount,
         fee: result.fee,
         onCommit: (tx) async {
+          await _recordPendingShieldedOutgoing(
+            txid: result.txId,
+            amount: amount,
+            fee: result.fee,
+            toAddress: toAddress,
+          );
+
           if (result.spentNullifiers.isNotEmpty) {
             await _shieldSyncEngine!.storage.markPendingSpentByNullifiers(
               result.spentNullifiers,
@@ -1272,6 +1386,27 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     }
 
     throw Exception('Insufficient shielded balance.');
+  }
+
+  int _shieldedSendAllAmount() {
+    final notes = _shieldSyncEngine!.storage.spendableNotesAt(
+      chainHeight: _shieldSyncEngine!.storage.lastSyncedHeight,
+    );
+    if (notes.isEmpty) {
+      throw Exception('No spendable shielded notes available.');
+    }
+
+    final total = notes.fold<int>(0, (sum, note) => sum + note.value);
+    final fee = PivxFeePolicy.saplingFee(
+      saplingInputs: notes.length,
+      saplingOutputs: 1,
+    );
+    final amount = total - fee;
+    if (amount < PivxFeePolicy.shieldedDustThreshold) {
+      throw Exception('Insufficient shielded balance after PIVX fee.');
+    }
+
+    return amount;
   }
 
   /// Check if a transaction is a coinstake transaction.

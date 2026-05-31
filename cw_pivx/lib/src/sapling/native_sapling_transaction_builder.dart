@@ -1,29 +1,30 @@
 /// Native implementation of Sapling transaction builder.
-/// 
+///
 /// This implementation uses the Rust FFI bindings for Groth16
 /// proof generation and transaction construction.
 
 import 'dart:typed_data';
 import 'package:cw_pivx/src/sapling/sapling_ffi.dart' as ffi;
+import 'package:cw_pivx/src/sapling/sapling_constants.dart';
 import 'package:cw_pivx/src/sapling/sapling_note.dart';
 import 'package:cw_pivx/src/sapling/native_sapling_key_manager.dart';
 import 'package:cw_pivx/src/sapling/native_shield_sync_engine.dart';
 import 'package:path_provider/path_provider.dart';
 
 /// Native Sapling transaction builder using Rust FFI.
-/// 
+///
 /// This is a simpler implementation that provides the core transaction
 /// building operations without implementing the full abstract interface.
 class NativeSaplingTransactionBuilder {
   final NativeSaplingKeyManager _keyManager;
   final NativeShieldSyncEngine _syncEngine;
-  
+
   NativeSaplingTransactionBuilder({
     required NativeSaplingKeyManager keyManager,
     required NativeShieldSyncEngine syncEngine,
   })  : _keyManager = keyManager,
         _syncEngine = syncEngine;
-  
+
   /// Build a shielded transaction.
   Future<Uint8List> buildShieldedTransaction({
     required List<SpendableNote> spends,
@@ -33,16 +34,17 @@ class NativeSaplingTransactionBuilder {
     // Ensure proving params exist
     final paramsPath = await _getProvingParamsPath();
     if (!ffi.hasProvingParams(paramsPath)) {
-      throw Exception('Proving parameters not found. Please download them first.');
+      throw Exception(
+          'Proving parameters not found. Please download them first.');
     }
-    
+
     if (outputs.isEmpty) {
       throw Exception('At least one output is required');
     }
-    
+
     final output = outputs.first;
     final currentHeight = _syncEngine.syncHeight;
-    
+
     return ffi.createTransaction(
       keys: _keyManager.nativeKeys,
       syncEngine: _syncEngine.nativeEngine,
@@ -53,9 +55,9 @@ class NativeSaplingTransactionBuilder {
       provingParamsPath: paramsPath,
     );
   }
-  
+
   /// Build a shielding transaction (transparent -> shielded).
-  /// 
+  ///
   /// Creates a transaction that moves funds from transparent UTXOs
   /// to a shielded address.
   Future<Uint8List> buildShieldTransaction({
@@ -68,31 +70,32 @@ class NativeSaplingTransactionBuilder {
     // Ensure proving params exist
     final paramsPath = await _getProvingParamsPath();
     if (!ffi.hasProvingParams(paramsPath)) {
-      throw Exception('Proving parameters not found. Please download them first.');
+      throw Exception(
+          'Proving parameters not found. Please download them first.');
     }
-    
+
     // Calculate fee if not provided
-    final txFee = fee ?? estimateFee(
-      numOutputs: 1,
-      numTransparentInputs: transparentInputs.length,
-    );
-    
+    final txFee = fee ??
+        estimateFee(
+          numOutputs: 1,
+          numTransparentInputs: transparentInputs.length,
+        );
+
     // Validate we have enough value
-    final totalInput = transparentInputs.fold(0, (sum, input) => sum + input.value);
+    final totalInput =
+        transparentInputs.fold(0, (sum, input) => sum + input.value);
     if (totalInput < amount + txFee) {
       throw Exception('Insufficient transparent funds for shielding');
     }
-    
+
     // The actual shielding is done by the native library
     // For now, throw unimplemented as we need to extend the FFI
-    throw UnimplementedError(
-      'Shield transaction requires extended FFI. '
-      'Total: $totalInput, Amount: $amount, Fee: $txFee'
-    );
+    throw UnimplementedError('Shield transaction requires extended FFI. '
+        'Total: $totalInput, Amount: $amount, Fee: $txFee');
   }
-  
+
   /// Build a deshielding transaction (shielded -> transparent).
-  /// 
+  ///
   /// Creates a transaction that moves funds from shielded notes
   /// to a transparent address.
   Future<Uint8List> buildDeshieldTransaction({
@@ -104,28 +107,28 @@ class NativeSaplingTransactionBuilder {
     // Ensure proving params exist
     final paramsPath = await _getProvingParamsPath();
     if (!ffi.hasProvingParams(paramsPath)) {
-      throw Exception('Proving parameters not found. Please download them first.');
+      throw Exception(
+          'Proving parameters not found. Please download them first.');
     }
-    
+
     // Calculate fee if not provided
-    final txFee = fee ?? estimateFee(
-      numSpends: shieldedInputs.length,
-      numTransparentOutputs: 1,
-    );
-    
+    final txFee = fee ??
+        estimateFee(
+          numSpends: shieldedInputs.length,
+          numTransparentOutputs: 1,
+        );
+
     // Validate we have enough value
     final totalInput = shieldedInputs.fold(0, (sum, note) => sum + note.value);
     if (totalInput < amount + txFee) {
       throw Exception('Insufficient shielded funds for deshielding');
     }
-    
+
     // The actual deshielding is done by the native library
-    throw UnimplementedError(
-      'Deshield transaction requires extended FFI. '
-      'Total: $totalInput, Amount: $amount, Fee: $txFee'
-    );
+    throw UnimplementedError('Deshield transaction requires extended FFI. '
+        'Total: $totalInput, Amount: $amount, Fee: $txFee');
   }
-  
+
   /// Estimate transaction fee.
   int estimateFee({
     int numSpends = 0,
@@ -140,57 +143,47 @@ class NativeSaplingTransactionBuilder {
       numTransparentOutputs: numTransparentOutputs,
     );
   }
-  
+
   /// Check if proving parameters are available.
   Future<bool> checkProvingParams() async {
     final paramsPath = await _getProvingParamsPath();
     return ffi.hasProvingParams(paramsPath);
   }
-  
+
   /// Download proving parameters.
-  /// 
-  /// Downloads the Sapling proving parameters from the Zcash download server.
-  /// These are the same parameters used by Zcash and PIVX:
+  ///
+  /// Downloads the Sapling proving parameters from the configured PIVX host.
+  /// These are the same parameter files used by Zcash and PIVX:
   /// - sapling-spend.params (~47MB)
   /// - sapling-output.params (~3.5MB)
   Future<void> downloadProvingParams({
     void Function(double progress)? onProgress,
   }) async {
     final paramsPath = await _getProvingParamsPath();
-    
-    // URLs for Sapling proving parameters
-    // These are the same files used by both Zcash and PIVX
-    const spendParamsUrl = 'https://download.z.cash/downloads/sapling-spend.params';
-    const outputParamsUrl = 'https://download.z.cash/downloads/sapling-output.params';
-    
-    // Expected SHA256 hashes for verification
-    const spendParamsHash = '8e48ffd23abb3a5fd9c5589204f32d9c31285a04b78096ba40a79b75677efc13';
-    const outputParamsHash = '2f0ebbcbb9bb0bcffe95a397e7eba89c29eb4dde6191c339db88570e3f3fb0e4';
-    
+
     // For actual download, we'd use http package
     // For now, document what needs to be done
     onProgress?.call(0.0);
-    
+
     // The implementation would:
     // 1. Create directory if needed
     // 2. Download sapling-spend.params
     // 3. Verify hash
-    // 4. Download sapling-output.params  
+    // 4. Download sapling-output.params
     // 5. Verify hash
-    
+
     // Placeholder - actual implementation needs http client
-    throw UnimplementedError(
-      'Proving params download requires http client. '
-      'URLs:\n  $spendParamsUrl (hash: $spendParamsHash)\n  $outputParamsUrl (hash: $outputParamsHash)\n'
-      'Download to: $paramsPath'
-    );
+    throw UnimplementedError('Proving params download requires http client. '
+        'URLs:\n  ${SaplingParams.spendParamsUrl} (size: ${SaplingParams.spendParamsSize}, hash: ${SaplingParams.spendParamsHash})'
+        '\n  ${SaplingParams.outputParamsUrl} (size: ${SaplingParams.outputParamsSize}, hash: ${SaplingParams.outputParamsHash})\n'
+        'Download to: $paramsPath');
   }
-  
+
   Future<String> _getProvingParamsPath() async {
     final appDir = await getApplicationDocumentsDirectory();
     return '${appDir.path}/pivx_sapling_params';
   }
-  
+
   /// Dispose resources.
   void dispose() {
     // Nothing to dispose
@@ -203,7 +196,7 @@ class TransparentInput {
   final int outputIndex;
   final Uint8List scriptPubKey;
   final int value;
-  
+
   TransparentInput({
     required this.txid,
     required this.outputIndex,
@@ -217,7 +210,7 @@ class TransactionOutput {
   final String address;
   final int value;
   final String? memo;
-  
+
   TransactionOutput({
     required this.address,
     required this.value,

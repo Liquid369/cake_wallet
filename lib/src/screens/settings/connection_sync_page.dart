@@ -7,6 +7,7 @@ import 'package:cake_wallet/src/screens/base_page.dart';
 import 'package:cake_wallet/src/screens/settings/widgets/settings_cell_with_arrow.dart';
 import 'package:cake_wallet/src/screens/settings/widgets/settings_switcher_cell.dart';
 import 'package:cake_wallet/src/screens/settings/widgets/wallet_connect_button.dart';
+import 'package:cake_wallet/src/widgets/standard_list_status_row.dart';
 import 'package:cake_wallet/src/widgets/alert_with_two_actions.dart';
 import 'package:cake_wallet/utils/feature_flag.dart';
 import 'package:cake_wallet/utils/show_pop_up.dart';
@@ -33,22 +34,39 @@ class ConnectionSyncPage extends BasePage {
             title: S.current.reconnect,
             handler: (context) => _presentReconnectAlert(context),
           ),
+          Observer(
+            builder: (context) {
+              final status = dashboardViewModel.pivxShieldedStatusValue;
+              if (status == null) {
+                return const SizedBox.shrink();
+              }
+
+              return StandardListStatusRow(
+                title: 'PIVX shielded sync',
+                value: status,
+                status: dashboardViewModel.pivxShieldedStatusIndicator,
+              );
+            },
+          ),
           if (dashboardViewModel.hasRescan) ...[
             SettingsCellWithArrow(
               title: dashboardViewModel.hasSilentPayments
                   ? S.current.silent_payments_scanning
                   : S.current.rescan,
-              handler: (context) => Navigator.of(context).pushNamed(Routes.rescan),
+              handler: (context) =>
+                  Navigator.of(context).pushNamed(Routes.rescan),
             ),
           ],
           SettingsCellWithArrow(
             title: S.current.manage_nodes,
-            handler: (context) => Navigator.of(context).pushNamed(Routes.manageNodes),
+            handler: (context) =>
+                Navigator.of(context).pushNamed(Routes.manageNodes),
           ),
           if (Platform.isAndroid && FeatureFlag.isBackgroundSyncEnabled) ...[
             SettingsCellWithArrow(
               title: S.current.background_sync,
-              handler: (context) => Navigator.of(context).pushNamed(Routes.backgroundSync),
+              handler: (context) =>
+                  Navigator.of(context).pushNamed(Routes.backgroundSync),
             ),
           ],
           Observer(
@@ -59,39 +77,43 @@ class ConnectionSyncPage extends BasePage {
                 children: [
                   SettingsCellWithArrow(
                     title: S.current.manage_pow_nodes,
-                    handler: (context) => Navigator.of(context).pushNamed(Routes.managePowNodes),
+                    handler: (context) =>
+                        Navigator.of(context).pushNamed(Routes.managePowNodes),
                   ),
                 ],
               );
             },
           ),
           if (isWalletConnectCompatibleChain(dashboardViewModel.wallet.type) &&
-              !dashboardViewModel.wallet.isHardwareWallet) ...[ // ToDo: Remove this line once WalletConnect is implemented
+              !dashboardViewModel.wallet.isHardwareWallet) ...[
+            // ToDo: Remove this line once WalletConnect is implemented
             WalletConnectTile(
-              onTap: () => Navigator.of(context).pushNamed(Routes.walletConnectConnectionsListing),
+              onTap: () => Navigator.of(context)
+                  .pushNamed(Routes.walletConnectConnectionsListing),
             ),
           ],
           if (FeatureFlag.isInAppTorEnabled)
             Observer(builder: (context) {
               return SettingsSwitcherCell(
                 leading: Container(
-                padding: EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                decoration: BoxDecoration(
-                  color: Colors.red.shade100,
-                  borderRadius: BorderRadius.circular(3),
-                ),
-                child: Text(
-                  'Alpha',
-                  style: TextStyle(
-                    color: Colors.red.shade700,
-                    fontSize: 8,
-                    fontWeight: FontWeight.bold,
+                  padding: EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade100,
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                  child: Text(
+                    'Alpha',
+                    style: TextStyle(
+                      color: Colors.red.shade700,
+                      fontSize: 8,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
-              ),
                 title: S.current.enable_builtin_tor,
                 value: dashboardViewModel.builtinTor,
-                onValueChange: (_, bool value) => dashboardViewModel.setBuiltinTor(value, context),
+                onValueChange: (_, bool value) =>
+                    dashboardViewModel.setBuiltinTor(value, context),
               );
             }),
         ],
