@@ -94,6 +94,76 @@ void main() {
       }
     });
 
+    test('advances shielded receive index without moving backwards', () async {
+      expect(storage.nextDiversifierIndex, 1);
+
+      await storage.advanceNextDiversifierIndexAtLeast(8);
+      expect(storage.nextDiversifierIndex, 8);
+
+      await storage.advanceNextDiversifierIndexAtLeast(3);
+      expect(storage.nextDiversifierIndex, 8);
+
+      expect(storage.getAndIncrementDiversifierIndex(), 8);
+      expect(storage.nextDiversifierIndex, 9);
+    });
+
+    test('persists generated shielded addresses and next receive index',
+        () async {
+      final walletId =
+          'shielded_addresses_${DateTime.now().millisecondsSinceEpoch}';
+      final storage1 = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        allowUnencryptedStorage: true,
+      );
+      await storage1.load();
+
+      await storage1.addAddress(StoredShieldedAddress(
+        diversifierIndex: 1,
+        address: 'ptestsapling1generated1',
+        label: 'first generated',
+      ));
+      await storage1.addAddress(StoredShieldedAddress(
+        diversifierIndex: 3,
+        address: 'ptestsapling1generated3',
+        label: 'third generated',
+      ));
+
+      final storage2 = SaplingNoteStorage(
+        walletId: walletId,
+        isTestnet: true,
+        allowUnencryptedStorage: true,
+      );
+      await storage2.load();
+
+      expect(storage2.addresses.map((address) => address.address), [
+        'ptestsapling1generated1',
+        'ptestsapling1generated3',
+      ]);
+      expect(storage2.addresses.last.label, equals('third generated'));
+      expect(storage2.nextDiversifierIndex, equals(4));
+    });
+
+    test('updating an existing shielded address preserves receive index',
+        () async {
+      await storage.addAddress(StoredShieldedAddress(
+        diversifierIndex: 5,
+        address: 'ptestsapling1generated5',
+        label: 'old label',
+      ));
+      expect(storage.nextDiversifierIndex, equals(6));
+
+      await storage.addAddress(StoredShieldedAddress(
+        diversifierIndex: 5,
+        address: 'ptestsapling1generated5',
+        label: 'new label',
+      ));
+
+      expect(storage.addresses, hasLength(1));
+      expect(storage.addresses.single.label, equals('new label'));
+      expect(storage.nextDiversifierIndex, equals(6));
+    });
+
     test('concurrent markSpentByNullifier operations are thread-safe',
         () async {
       // Add notes first
@@ -225,6 +295,89 @@ void main() {
         ),
         equals(5000),
       );
+    });
+
+    test('shielded spend eligibility summary is count-only and maturity-aware',
+        () async {
+      await storage.addNote(StoredSaplingNote(
+        id: 'young_tx:0',
+        value: 5000,
+        height: 100,
+        txid: 'young_tx',
+        outputIndex: 0,
+        treePosition: 0,
+        cmu: 'cmu_young',
+        nullifier: 'nf_young',
+        rseed: 'rseed_young',
+        diversifier: 'diversifier_young',
+        pkD: 'pkd_young',
+      ));
+      await storage.addNote(StoredSaplingNote(
+        id: 'mature_tx:0',
+        value: 6000,
+        height: 99,
+        txid: 'mature_tx',
+        outputIndex: 0,
+        treePosition: 1,
+        cmu: 'cmu_mature',
+        nullifier: 'nf_mature',
+        rseed: 'rseed_mature',
+        diversifier: 'diversifier_mature',
+        pkD: 'pkd_mature',
+      ));
+      await storage.addNote(StoredSaplingNote(
+        id: 'missing_spend_data_tx:0',
+        value: 7000,
+        height: 99,
+        txid: 'missing_spend_data_tx',
+        outputIndex: 0,
+        treePosition: 2,
+        cmu: 'cmu_missing',
+      ));
+      await storage.addNote(StoredSaplingNote(
+        id: 'pending_spend_tx:0',
+        value: 8000,
+        height: 99,
+        txid: 'pending_spend_tx',
+        outputIndex: 0,
+        treePosition: 3,
+        cmu: 'cmu_pending',
+        nullifier: 'nf_pending',
+        rseed: 'rseed_pending',
+        diversifier: 'diversifier_pending',
+        pkD: 'pkd_pending',
+        isPendingSpend: true,
+      ));
+      await storage.addNote(StoredSaplingNote(
+        id: 'spent_tx:0',
+        value: 9000,
+        height: 99,
+        txid: 'spent_tx',
+        outputIndex: 0,
+        treePosition: 4,
+        cmu: 'cmu_spent',
+        nullifier: 'nf_spent',
+        rseed: 'rseed_spent',
+        diversifier: 'diversifier_spent',
+        pkD: 'pkd_spent',
+        isSpent: true,
+      ));
+
+      final summary = storage.spendEligibilitySummaryAt(
+        chainHeight: 104,
+        minConfirmations: 6,
+      );
+
+      expect(summary.totalUnspent, equals(4));
+      expect(summary.spendable, equals(1));
+      expect(summary.pendingConfirmation, equals(1));
+      expect(summary.pendingSpend, equals(1));
+      expect(summary.missingSpendingData, equals(1));
+      expect(summary.sanitizedLogLine, contains('min_confirmations=6'));
+      expect(summary.sanitizedLogLine, contains('spendable=1'));
+      expect(summary.sanitizedLogLine, isNot(contains('tx')));
+      expect(summary.sanitizedLogLine, isNot(contains('nf_')));
+      expect(summary.sanitizedLogLine, isNot(contains('cmu_')));
     });
 
     test('concurrent balance calculations are consistent', () async {

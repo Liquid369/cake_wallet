@@ -1,5 +1,10 @@
+import 'dart:io';
+
+import 'package:crypto/crypto.dart';
 import 'package:cw_pivx/src/sapling/sapling_constants.dart';
 import 'package:cw_pivx/src/sapling/sapling_factories.dart';
+import 'package:cw_core/utils/proxy_wrapper.dart';
+import 'package:cw_core/utils/tor/disabled.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -68,6 +73,88 @@ void main() {
     });
   });
 
+  group('Sapling proving parameter download', () {
+    setUp(() {
+      CakeTor.instance = CakeTorDisabled();
+    });
+
+    test('streams files to temp paths, verifies them, and renames finals',
+        () async {
+      final spendBytes = List<int>.generate(257, (i) => i % 251);
+      final outputBytes = List<int>.generate(113, (i) => (i * 3) % 251);
+      final server = await _serveParams(
+        spendBytes: spendBytes,
+        outputBytes: outputBytes,
+      );
+      final dir = await Directory.systemTemp.createTemp('pivx_params_test_');
+      final progress = <double>[];
+
+      try {
+        await SaplingTransactionBuilderWrapper.downloadProvingParamsToPath(
+          path: dir.path,
+          onProgress: progress.add,
+          spendParamsUrl: _serverUrl(server, SaplingParams.spendParamsFileName),
+          spendParamsSize: spendBytes.length,
+          spendParamsHash: sha256.convert(spendBytes).toString(),
+          outputParamsUrl:
+              _serverUrl(server, SaplingParams.outputParamsFileName),
+          outputParamsSize: outputBytes.length,
+          outputParamsHash: sha256.convert(outputBytes).toString(),
+        );
+
+        final spendFile =
+            File('${dir.path}/${SaplingParams.spendParamsFileName}');
+        final outputFile =
+            File('${dir.path}/${SaplingParams.outputParamsFileName}');
+
+        expect(await spendFile.readAsBytes(), spendBytes);
+        expect(await outputFile.readAsBytes(), outputBytes);
+        expect(await File('${spendFile.path}.download').exists(), isFalse);
+        expect(await File('${outputFile.path}.download').exists(), isFalse);
+        expect(progress.last, 1.0);
+      } finally {
+        await server.close(force: true);
+        await dir.delete(recursive: true);
+      }
+    });
+
+    test('deletes temp files when verification fails', () async {
+      final spendBytes = List<int>.filled(16, 7);
+      final outputBytes = List<int>.filled(16, 9);
+      final server = await _serveParams(
+        spendBytes: spendBytes,
+        outputBytes: outputBytes,
+      );
+      final dir = await Directory.systemTemp.createTemp('pivx_params_bad_');
+
+      try {
+        await expectLater(
+          SaplingTransactionBuilderWrapper.downloadProvingParamsToPath(
+            path: dir.path,
+            onProgress: (_) {},
+            spendParamsUrl:
+                _serverUrl(server, SaplingParams.spendParamsFileName),
+            spendParamsSize: spendBytes.length,
+            spendParamsHash: '00',
+            outputParamsUrl:
+                _serverUrl(server, SaplingParams.outputParamsFileName),
+            outputParamsSize: outputBytes.length,
+            outputParamsHash: sha256.convert(outputBytes).toString(),
+          ),
+          throwsA(isA<Exception>()),
+        );
+
+        final spendFile =
+            File('${dir.path}/${SaplingParams.spendParamsFileName}');
+        expect(await spendFile.exists(), isFalse);
+        expect(await File('${spendFile.path}.download').exists(), isFalse);
+      } finally {
+        await server.close(force: true);
+        await dir.delete(recursive: true);
+      }
+    });
+  });
+
   group('SaplingTransactionBuilderWrapper note planning', () {
     test('selects enough notes to cover amount and fee', () {
       final selected = SaplingTransactionBuilderWrapper.selectNotesForAmount(
@@ -107,5 +194,130 @@ void main() {
 
       expect(selected.length, 2);
     });
+
+    test('z-to-t spend plan uses transparent destination output size', () {
+      // 1 spend + 1 transparent vout, no shielded change:
+      // size = 85 + 384 + 34 = 503 -> fee = ceil(503*10000/1000)*100.
+      final expectedNoChangeFee = PivxFeePolicy.saplingFee(
+        saplingInputs: 1,
+        saplingOutputs: 0,
+        transparentOutputs: 1,
+      );
+      final plan = SaplingTransactionBuilderWrapper.planShieldedSpend(
+        totalInput: 2000000 + expectedNoChangeFee,
+        amount: 2000000,
+        saplingInputs: 1,
+        transparentDestination: true,
+      );
+
+      expect(plan.canBuild, isTrue);
+      expect(plan.change, 0);
+      expect(plan.fee, expectedNoChangeFee);
+      expect(expectedNoChangeFee,
+          lessThan(PivxFeePolicy.saplingFee(saplingInputs: 1, saplingOutputs: 1)));
+    });
+
+    test('z-to-t spend plan pays shielded change above dust', () {
+      final withChangeFee = PivxFeePolicy.saplingFee(
+        saplingInputs: 1,
+        saplingOutputs: 1,
+        transparentOutputs: 1,
+      );
+      final change = PivxFeePolicy.shieldedDustThreshold + 1;
+      final plan = SaplingTransactionBuilderWrapper.planShieldedSpend(
+        totalInput: 2000000 + withChangeFee + change,
+        amount: 2000000,
+        saplingInputs: 1,
+        transparentDestination: true,
+      );
+
+      expect(plan.canBuild, isTrue);
+      expect(plan.change, change);
+      expect(plan.fee, withChangeFee);
+    });
+
+    test('t-to-z shield plan pays transparent change above dust', () {
+      final withChangeFee = PivxFeePolicy.saplingFee(
+        saplingOutputs: 1,
+        transparentInputs: 2,
+        transparentOutputs: 1,
+      );
+      final change = PivxFeePolicy.transparentDustThreshold + 1;
+      final plan = SaplingTransactionBuilderWrapper.planShieldSpend(
+        totalInput: 2000000 + withChangeFee + change,
+        amount: 2000000,
+        transparentInputs: 2,
+      );
+
+      expect(plan.canBuild, isTrue);
+      expect(plan.change, change);
+      expect(plan.fee, withChangeFee);
+    });
+
+    test('t-to-z shield plan absorbs dust change into the fee', () {
+      final noChangeFee = PivxFeePolicy.saplingFee(
+        saplingOutputs: 1,
+        transparentInputs: 1,
+      );
+      final dust = PivxFeePolicy.transparentDustThreshold;
+      final plan = SaplingTransactionBuilderWrapper.planShieldSpend(
+        totalInput: 2000000 + noChangeFee + dust,
+        amount: 2000000,
+        transparentInputs: 1,
+      );
+
+      expect(plan.canBuild, isTrue);
+      expect(plan.change, 0);
+      expect(plan.fee, noChangeFee + dust);
+    });
+
+    test('z-to-t dust change is absorbed into the fee', () {
+      final noChangeFee = PivxFeePolicy.saplingFee(
+        saplingInputs: 1,
+        saplingOutputs: 0,
+        transparentOutputs: 1,
+      );
+      final dustRemainder = PivxFeePolicy.shieldedDustThreshold;
+      final plan = SaplingTransactionBuilderWrapper.planShieldedSpend(
+        totalInput: 2000000 + noChangeFee + dustRemainder,
+        amount: 2000000,
+        saplingInputs: 1,
+        transparentDestination: true,
+      );
+
+      expect(plan.canBuild, isTrue);
+      expect(plan.change, 0);
+      expect(plan.fee, noChangeFee + dustRemainder);
+    });
   });
 }
+
+Future<HttpServer> _serveParams({
+  required List<int> spendBytes,
+  required List<int> outputBytes,
+}) async {
+  final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+  server.listen((request) {
+    final requestedFile =
+        request.uri.pathSegments.isEmpty ? '' : request.uri.pathSegments.last;
+    final bytes = requestedFile == SaplingParams.spendParamsFileName
+        ? spendBytes
+        : requestedFile == SaplingParams.outputParamsFileName
+            ? outputBytes
+            : null;
+
+    if (bytes == null) {
+      request.response.statusCode = HttpStatus.notFound;
+      request.response.close();
+      return;
+    }
+
+    request.response.contentLength = bytes.length;
+    request.response.add(bytes);
+    request.response.close();
+  });
+  return server;
+}
+
+String _serverUrl(HttpServer server, String filename) =>
+    'http://${InternetAddress.loopbackIPv4.address}:${server.port}/$filename';
