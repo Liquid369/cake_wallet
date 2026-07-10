@@ -18,9 +18,33 @@
 #define SAPLING_TREE_DEPTH 32
 
 /**
+ * PIVX max supply: 21,000,000 coins = 21,000,000,000,000 zatoshis (21 trillion zatoshis).
+ */
+#define PIVX_MAX_SUPPLY 21000000000000ull
+
+/**
+ * Shielded dust threshold derived from PIVX Core v5.6.1:
+ * 100 * dustRelayFee.GetFee(384-byte spend + 34-byte txout + 64-byte binding sig).
+ */
+#define SHIELDED_DUST_THRESHOLD 1446000ull
+
+/**
+ * Transparent dust threshold derived from PIVX Core v5.6.1:
+ * dustRelayFee.GetFee(182) with dust relay fee 30,000 zatoshis/kB.
+ */
+#define TRANSPARENT_DUST_THRESHOLD 5460ull
+
+/**
  * PIVX Sapling activation height.
  */
 #define PIVX_SAPLING_ACTIVATION 2700500
+
+#define PIVX_TESTNET_SAPLING_ACTIVATION 201
+
+/**
+ * Default Bitcoin/PIVX sequence number.
+ */
+#define TransparentInput_SEQUENCE_FINAL 4294967295
 
 /**
  * FFI buffer for returning binary data.
@@ -29,6 +53,61 @@ typedef struct FFIBuffer {
   uint8_t *data;
   uintptr_t len;
 } FFIBuffer;
+
+/**
+ * Build a shielded transaction with explicit note and witness data.
+ *
+ * This is the more complete transaction building function that accepts
+ * pre-computed witnesses from the caller (typically fetched from ElectrumX).
+ *
+ * # Parameters
+ * * `key_handle` - Handle from cw_pivx_init_keys
+ * * `notes_json` - JSON array of spendable notes with witnesses
+ * * `to_address` - Recipient address (ps1... format)
+ * * `amount` - Amount in zatoshis
+ * * `memo` - Optional memo (512 bytes max, null for none)
+ * * `fee` - Fee in zatoshis
+ * * `anchor_hex` - Current anchor (merkle root) as 32-byte hex
+ *
+ * # Returns
+ * FFIBuffer containing JSON with txid and tx_hex, or empty on error
+ * Build a transparent-to-shielded (t-to-z, shield) transaction.
+ *
+ * `utxos_json` is an array of objects with `txid` (display hex), `vout`,
+ * `value`, `script_pubkey` (hex, P2PKH) and `private_key` (32-byte hex).
+ * `change` of zero means no transparent change output; otherwise
+ * `change_address` receives it. Amounts must balance exactly:
+ * sum(utxos) = amount + change + fee.
+ */
+struct FFIBuffer cw_pivx_build_shield_tx(int64_t key_handle,
+                                         const char *utxos_json,
+                                         const char *to_address,
+                                         uint64_t amount,
+                                         const char *memo,
+                                         uint64_t fee,
+                                         const char *change_address,
+                                         uint64_t change);
+
+struct FFIBuffer cw_pivx_build_shielded_tx(int64_t key_handle,
+                                           const char *notes_json,
+                                           const char *to_address,
+                                           uint64_t amount,
+                                           const char *memo,
+                                           uint64_t fee,
+                                           const char *anchor_hex);
+
+/**
+ * Check if a nullifier matches any of our notes and mark them spent.
+ *
+ * # Parameters
+ * * `sync_handle` - Handle from cw_pivx_init_sync_engine
+ * * `nullifier` - 32-byte nullifier to check
+ *
+ * # Returns
+ * 1 if a note was marked spent, 0 otherwise.
+ */
+uint8_t cw_pivx_check_nullifier(int64_t sync_handle,
+                                const uint8_t *nullifier);
 
 /**
  * Create a shielded transaction.
@@ -54,12 +133,18 @@ char *cw_pivx_derive_address(int64_t handle,
 void cw_pivx_dispose_keys(int64_t handle);
 
 /**
+ * Free the prover and release memory (~50MB).
+ */
+void cw_pivx_dispose_prover(void);
+
+/**
  * Dispose sync engine.
  */
 void cw_pivx_dispose_sync_engine(int64_t handle);
 
 /**
  * Estimate transaction fee.
+ * Returns the estimated fee in zatoshis, or u64::MAX if overflow would occur.
  */
 uint64_t cw_pivx_estimate_fee(uintptr_t spends,
                               uintptr_t outputs,
@@ -92,6 +177,21 @@ char *cw_pivx_get_last_error(void);
 uint64_t cw_pivx_get_shielded_balance(int64_t handle);
 
 /**
+ * Get all spendable notes from the sync state as JSON.
+ *
+ * Returns a JSON array of note objects, each containing all data
+ * needed for transaction building including the rseed and diversifier.
+ *
+ * # Parameters
+ * * `sync_handle` - Handle from cw_pivx_init_sync_engine
+ *
+ * # Returns
+ * JSON string with note data, or null on error.
+ * Caller must free with cw_pivx_free_string.
+ */
+char *cw_pivx_get_spendable_notes(int64_t sync_handle);
+
+/**
  * Get the current sync height.
  */
 uint32_t cw_pivx_get_sync_height(int64_t handle);
@@ -120,14 +220,88 @@ int64_t cw_pivx_init_keys(const uint8_t *seed,
                           uint8_t is_testnet);
 
 /**
+ * Initialize the Groth16 prover with the proving parameters.
+ *
+ * This loads the ~50MB proving parameter files into memory.
+ * Should be called once before any transaction building.
+ *
+ * # Parameters
+ * * `params_dir` - Path to directory containing sapling-spend.params and sapling-output.params
+ *
+ * # Returns
+ * 0 on success, negative on error
+ */
+int32_t cw_pivx_init_prover(const char *params_dir);
+
+/**
  * Initialize sync engine.
  */
 int64_t cw_pivx_init_sync_engine(uint8_t _is_testnet);
 
 /**
+ * Check if the prover is initialized.
+ */
+uint8_t cw_pivx_is_prover_initialized(void);
+
+/**
  * Reset sync state.
  */
 void cw_pivx_reset_sync(int64_t handle);
+
+/**
+ * Restore a note from JSON data.
+ *
+ * This allows restoring notes from persistent storage after app restart.
+ * The JSON should contain the same fields returned by cw_pivx_get_spendable_notes.
+ *
+ * # Parameters
+ * * `key_handle` - Handle from cw_pivx_init_keys
+ * * `sync_handle` - Handle from cw_pivx_init_sync_engine
+ * * `note_json` - JSON string with note data
+ *
+ * # Returns
+ * 1 on success, 0 on failure
+ */
+int32_t cw_pivx_restore_note(int64_t key_handle,
+                             int64_t sync_handle,
+                             const char *note_json);
+
+/**
+ * Update sync height after processing a block.
+ */
+void cw_pivx_set_sync_height(int64_t sync_handle,
+                             uint32_t height);
+
+/**
+ * Try to decrypt a Sapling output and add to sync state if successful.
+ *
+ * This is the core function for detecting incoming shielded transactions.
+ * It attempts trial decryption of a Sapling output using the wallet's
+ * incoming viewing key.
+ *
+ * # Parameters
+ * * `key_handle` - Handle from cw_pivx_init_keys
+ * * `sync_handle` - Handle from cw_pivx_init_sync_engine
+ * * `cmu` - Note commitment (32 bytes)
+ * * `epk` - Ephemeral public key (32 bytes)
+ * * `enc_ciphertext` - Encrypted ciphertext (580 bytes)
+ * * `height` - Block height
+ * * `tx_index` - Transaction index in block
+ * * `output_index` - Output index in transaction
+ * * `position` - Position in commitment tree
+ *
+ * # Returns
+ * The note value in zatoshis if decryption succeeds, 0 otherwise.
+ */
+uint64_t cw_pivx_try_decrypt_output(int64_t key_handle,
+                                    int64_t sync_handle,
+                                    const uint8_t *cmu,
+                                    const uint8_t *epk,
+                                    const uint8_t *enc_ciphertext,
+                                    uint32_t height,
+                                    uint32_t tx_index,
+                                    uint32_t output_index,
+                                    uint64_t position);
 
 /**
  * Validate a Sapling address.

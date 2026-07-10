@@ -23,15 +23,17 @@
 #define PIVX_MAX_SUPPLY 21000000000000ull
 
 /**
- * Dust threshold: 0.001 PIV = 1,000,000 zatoshis (1 million).
- * Outputs below this are economically unspendable due to fee costs.
+ * Shielded dust threshold derived from PIVX Core v5.6.1:
+ * 100 * dustRelayFee.GetFee(384-byte spend + 34-byte txout + 64-byte binding sig).
  */
-#define DUST_THRESHOLD 1000000ull
+#define SHIELDED_DUST_THRESHOLD 1446000ull
 
 /**
  * PIVX Sapling activation height.
  */
 #define PIVX_SAPLING_ACTIVATION 2700500
+
+#define PIVX_TESTNET_SAPLING_ACTIVATION 201
 
 /**
  * FFI buffer for returning binary data.
