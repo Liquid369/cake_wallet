@@ -164,11 +164,8 @@ class PivxWalletService extends WalletService<
           'Invalid PIVX WIF format. Expected to start with Y, 7, c, or 9');
     }
 
-    // Create wallet from WIF by deriving a deterministic "mnemonic" from the key
-    // Since WIF is a single key, we use watch-only mode for now
-    // Full implementation would require custom key storage
-    throw UnimplementedError('WIF import requires watch-only wallet support. '
-        'Use mnemonic restore for full wallet functionality.');
+    throw UnsupportedError(
+        'PIVX WIF import is not supported yet. Restore PIVX wallets from seed phrase and optional restore height.');
   }
 
   @override

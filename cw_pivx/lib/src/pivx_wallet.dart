@@ -1,10 +1,14 @@
+import 'dart:async';
+
 import 'package:bitcoin_base/bitcoin_base.dart';
+import 'package:bech32/bech32.dart';
 import 'package:blockchain_utils/blockchain_utils.dart';
 import 'package:cw_bitcoin/bitcoin_address_record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:cw_bitcoin/bitcoin_mnemonics_bip39.dart';
 import 'package:cw_bitcoin/bitcoin_transaction_credentials.dart';
 import 'package:cw_bitcoin/bitcoin_unspent.dart';
+import 'package:cw_bitcoin/electrum.dart' as electrum;
 import 'package:cw_bitcoin/electrum_balance.dart';
 import 'package:cw_bitcoin/electrum_transaction_info.dart';
 import 'package:cw_bitcoin/electrum_wallet.dart';
@@ -36,6 +40,9 @@ import 'sapling/sapling_factories.dart';
 import 'sapling/sapling_note_storage.dart';
 
 part 'pivx_wallet.g.dart';
+
+const bool _debugClearPendingShieldedSpends =
+    bool.fromEnvironment('PIVX_CLEAR_PENDING_SHIELDED_SPENDS');
 
 /// PIVX wallet implementation with full Sapling shielded transaction support.
 ///
@@ -69,6 +76,41 @@ part 'pivx_wallet.g.dart';
 class PivxWallet = PivxWalletBase with _$PivxWallet;
 
 abstract class PivxWalletBase extends ElectrumWallet with Store {
+  static const int _shieldedRestoreAddressReuseScanLimit = 1000;
+  static const int _shieldedBirthdayRewindBlocks = 1440;
+
+  static String sanitizeShieldSyncError(Object error) {
+    final text = error.toString().toLowerCase();
+
+    if (text.contains('tree cursor') ||
+        text.contains('global output positions')) {
+      return 'PIVX Sapling sync requires a Sapling v1 ElectrumX node with global output positions. Switch nodes and retry.';
+    }
+    if (text.contains('advertises v1') ||
+        text.contains('release contract features')) {
+      return 'Current PIVX node advertises incomplete Sapling v1 support. Switch to a fully upgraded Sapling v1 node and retry.';
+    }
+    if (text.contains('incomplete range') ||
+        text.contains('partial_index') ||
+        text.contains('index_not_ready') ||
+        text.contains('backend_timeout')) {
+      return 'Current PIVX node did not return a complete Sapling block range yet. Wait for the node to finish indexing and retry.';
+    }
+    if (text.contains('block scanning') ||
+        text.contains('get_block_range') ||
+        text.contains('rpc method unavailable')) {
+      return 'Current PIVX node does not support Sapling block scanning. Switch to a Sapling-capable node and retry.';
+    }
+    if (text.contains('network mismatch')) {
+      return 'Current PIVX node is on the wrong network for this wallet. Switch nodes and retry.';
+    }
+    if (text.contains('activation height mismatch')) {
+      return 'Current PIVX node reports an unexpected Sapling activation height. Switch nodes and retry.';
+    }
+
+    return 'PIVX Sapling sync failed. Check node capability and retry.';
+  }
+
   PivxWalletBase({
     required String mnemonic,
     required String password,
@@ -84,6 +126,7 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     ElectrumBalance? initialBalance,
     Map<String, int>? initialRegularAddressIndex,
     Map<String, int>? initialChangeAddressIndex,
+    electrum.ElectrumClient? electrumClient,
   }) : super(
           mnemonic: mnemonic,
           password: password,
@@ -97,6 +140,7 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
           currency: CryptoCurrency.pivx,
           encryptionFileUtils: encryptionFileUtils,
           passphrase: passphrase,
+          electrumClient: electrumClient,
         ) {
     walletAddresses = PivxWalletAddresses(
       walletInfo,
@@ -120,6 +164,14 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     await super.init();
     // Try to initialize Sapling (won't throw if native library is unavailable)
     await tryInitializeSapling();
+    _ensureShieldedHeaderSyncSubscription();
+  }
+
+  @override
+  Future<void> close({bool shouldCleanup = false}) async {
+    await _shieldedHeaderSyncSubscription?.cancel();
+    _shieldedHeaderSyncSubscription = null;
+    await super.close(shouldCleanup: shouldCleanup);
   }
 
   // ============================================================
@@ -133,6 +185,7 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
   /// The shield sync engine for note scanning.
   /// Initialized lazily when Sapling sync is started.
   ShieldSyncEngineWrapper? _shieldSyncEngine;
+  bool _shieldSyncEngineInitialized = false;
 
   /// The Sapling transaction builder.
   /// Initialized lazily when building shielded transactions.
@@ -140,6 +193,9 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
 
   /// Lock for synchronizing balance updates to prevent race conditions.
   final _balanceLock = Lock();
+
+  StreamSubscription<Object>? _shieldedHeaderSyncSubscription;
+  DateTime? _lastHeaderTriggeredShieldSync;
 
   /// Whether Sapling is enabled for this wallet.
   /// Default true for PIVX wallets.
@@ -304,6 +360,13 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
         encryptionFileUtils: encryptionFileUtils,
         password: password,
       );
+      if (!_shieldSyncEngineInitialized) {
+        await _shieldSyncEngine!.initialize();
+        _shieldSyncEngineInitialized = true;
+      }
+      _restoreCurrentShieldedAddressFromStorage();
+
+      await _debugClearPendingShieldedSpendReservations();
 
       // Restore notes from storage to native engine
       await _shieldSyncEngine!.restoreNotesFromStorage();
@@ -509,7 +572,15 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
   Future<void> _ensureShieldSyncEngineInitialized() async {
     await initializeSapling();
 
-    if (_shieldSyncEngine != null) return;
+    if (_shieldSyncEngine != null) {
+      if (!_shieldSyncEngineInitialized) {
+        await _shieldSyncEngine!.initialize();
+        _shieldSyncEngineInitialized = true;
+        await _debugClearPendingShieldedSpendReservations();
+      }
+      _restoreCurrentShieldedAddressFromStorage();
+      return;
+    }
 
     _shieldSyncEngine = await ShieldSyncEngineFactory.create(
       keyManager: _saplingKeyManager!,
@@ -520,6 +591,63 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
       password: password,
     );
     await _shieldSyncEngine!.initialize();
+    _shieldSyncEngineInitialized = true;
+    _restoreCurrentShieldedAddressFromStorage();
+    await _debugClearPendingShieldedSpendReservations();
+  }
+
+  void _restoreCurrentShieldedAddressFromStorage() {
+    final addresses = _shieldSyncEngine?.storage.addresses;
+    if (addresses == null || addresses.isEmpty) return;
+
+    final current = currentShieldedReceiveAddressFromStorage(addresses);
+    currentShieldedAddress = current.address;
+  }
+
+  @visibleForTesting
+  static StoredShieldedAddress currentShieldedReceiveAddressFromStorage(
+    List<StoredShieldedAddress> addresses,
+  ) {
+    if (addresses.isEmpty) {
+      throw StateError('No stored PIVX shielded receive addresses');
+    }
+
+    return addresses.reduce((a, b) =>
+        a.diversifierIndex >= b.diversifierIndex ? a : b);
+  }
+
+  Future<void> _debugClearPendingShieldedSpendReservations() async {
+    if (!kDebugMode || !_debugClearPendingShieldedSpends) return;
+    if (_shieldSyncEngine == null) return;
+
+    final cleared = await _shieldSyncEngine!.storage.clearPendingSpentNotes();
+    final staleHistoryTxids = transactionHistory.transactions.entries
+        .where((entry) =>
+            entry.value.additionalInfo['isPivxShielded'] == true &&
+            entry.value.additionalInfo['pivxRoute'] == 'z-to-z' &&
+            entry.value.direction == TransactionDirection.outgoing &&
+            entry.value.isPending)
+        .map((entry) => entry.key)
+        .toList(growable: false);
+
+    for (final txid in staleHistoryTxids) {
+      transactionHistory.transactions.remove(txid);
+    }
+
+    if (staleHistoryTxids.isNotEmpty) {
+      await transactionHistory.save();
+    }
+
+    printV(
+      '[PIVX Sapling] Debug pending shielded spend cleanup: '
+      'cleared_value=$cleared stale_history=${staleHistoryTxids.length}',
+    );
+
+    if (cleared <= 0 && staleHistoryTxids.isEmpty) return;
+
+    printV('[PIVX Sapling] Debug cleared pending shielded spends');
+    await _shieldSyncEngine!.restoreNotesFromStorage();
+    await _reconcileShieldedBalance();
   }
 
   Future<void> _ensureSaplingRpcSupportsShieldedSync() async {
@@ -551,13 +679,13 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
   /// [index] - Diversifier index (default: current address).
   /// Returns the Bech32-encoded shielded address (ps1...).
   Future<String> getShieldedAddress({int? index}) async {
-    await initializeSapling();
-
     if (index != null) {
+      await initializeSapling();
       final address = await _saplingKeyManager!.deriveAddress(index);
       return address;
     }
 
+    await _ensureShieldSyncEngineInitialized();
     return currentShieldedAddress!;
   }
 
@@ -636,9 +764,11 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     try {
       await _ensureSaplingRpcSupportsShieldedSync();
 
+      final initialRestoreHeight = await _initialShieldSyncHeight();
+
       // Start from specified height or last synced height
       await _shieldSyncEngine!.startSync(
-        startHeight: fromHeight,
+        startHeight: fromHeight ?? initialRestoreHeight,
         onProgress: (status) async {
           lastShieldSyncedBlock = status.lastSyncedBlock;
 
@@ -651,10 +781,9 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
           });
 
           // Update wallet syncStatus so UI can display progress
-          if (status.blocksRemaining > 0 && status.chainTip > 0) {
-            final progress = status.lastSyncedBlock / status.chainTip;
-            syncStatus =
-                core_sync.SyncingSyncStatus(status.blocksRemaining, progress);
+          final shieldProgressStatus = syncStatusForShieldProgress(status);
+          if (shieldProgressStatus != null) {
+            syncStatus = shieldProgressStatus;
           }
 
           onProgress?.call(status);
@@ -662,18 +791,156 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
       );
 
       // Final reconciliation after sync completes
+      await _advanceShieldedDiversifierIndexPastObservedNotes();
       await _reconcileShieldedBalance();
       await _refreshShieldedTransactionHistory();
       saplingRpcAvailable = true;
       lastShieldSyncError = null;
     } catch (e) {
       saplingRpcAvailable = false;
-      lastShieldSyncError =
-          'PIVX Sapling sync failed. Check node capability and retry.';
+      lastShieldSyncError = sanitizeShieldSyncError(e);
       rethrow;
     } finally {
       isShieldSyncing = false;
     }
+  }
+
+  void _ensureShieldedHeaderSyncSubscription() {
+    if (_shieldedHeaderSyncSubscription != null || !saplingEnabled) {
+      return;
+    }
+
+    final subject = electrumClient.chainTipSubscribe();
+    if (subject == null) {
+      return;
+    }
+
+    _shieldedHeaderSyncSubscription = subject.listen((event) async {
+      final height = _heightFromHeaderEvent(event);
+      if (height != null) {
+        currentChainTip = height;
+      }
+
+      if (!saplingEnabled ||
+          _saplingKeyManager == null ||
+          _shieldSyncEngine == null ||
+          isShieldSyncing) {
+        return;
+      }
+      if (height != null &&
+          lastShieldSyncedBlock > 0 &&
+          height <= lastShieldSyncedBlock) {
+        return;
+      }
+
+      final now = DateTime.now();
+      if (!shouldRunShieldedHeaderSync(
+        lastSyncAt: _lastHeaderTriggeredShieldSync,
+        now: now,
+      )) {
+        return;
+      }
+
+      _lastHeaderTriggeredShieldSync = now;
+      try {
+        printV('[PIVX Sapling] Header-triggered shielded sync');
+        await syncShielded();
+      } catch (e) {
+        printV(
+            '[PIVX Sapling] Header-triggered shielded sync failed: ${sanitizeShieldSyncError(e)}');
+      }
+    });
+  }
+
+  @visibleForTesting
+  static bool shouldRunShieldedHeaderSync({
+    required DateTime? lastSyncAt,
+    required DateTime now,
+  }) {
+    if (lastSyncAt == null) return true;
+    return now.difference(lastSyncAt) >=
+        const Duration(seconds: PivxNetwork.targetBlockTime);
+  }
+
+  static int? _heightFromHeaderEvent(Object? event) {
+    if (event is int) return event;
+    if (event is num) return event.toInt();
+    if (event is Map) {
+      return _intFromHeaderField(event['height']) ??
+          _intFromHeaderField(event['block_height']);
+    }
+    return null;
+  }
+
+  static int? _intFromHeaderField(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value);
+    return null;
+  }
+
+  @visibleForTesting
+  static core_sync.SyncStatus? syncStatusForShieldProgress(SyncStatus status) {
+    if (status.blocksRemaining > 0 && status.chainTip > 0) {
+      final progress = status.lastSyncedBlock / status.chainTip;
+      return core_sync.SyncingSyncStatus(status.blocksRemaining, progress);
+    }
+
+    if (status.blocksRemaining == 0 && status.progress >= 1.0) {
+      return core_sync.SyncedSyncStatus();
+    }
+
+    return null;
+  }
+
+  Future<int?> _initialShieldSyncHeight() async {
+    if (_shieldSyncEngine!.storage.lastSyncedHeight != 0) {
+      return null;
+    }
+
+    final activationHeight = _shieldSyncEngine!.saplingClient.activationHeight;
+    if (walletInfo.restoreHeight > 0) {
+      return walletInfo.restoreHeight < activationHeight
+          ? activationHeight
+          : walletInfo.restoreHeight;
+    }
+
+    if (walletInfo.isRecovery) {
+      return null;
+    }
+
+    try {
+      final tip = await electrumClient.getCurrentBlockChainTip();
+      if (tip == null || tip <= activationHeight) {
+        return null;
+      }
+
+      final birthdayHeight = _estimateShieldedBirthdayHeight(
+        chainTip: tip,
+        activationHeight: activationHeight,
+      );
+      await walletInfo.updateRestoreHeight(birthdayHeight);
+      return birthdayHeight;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  int _estimateShieldedBirthdayHeight({
+    required int chainTip,
+    required int activationHeight,
+  }) {
+    final createdAt = DateTime.fromMillisecondsSinceEpoch(walletInfo.timestamp);
+    final age = DateTime.now().difference(createdAt);
+    final ageInBlocks = age.isNegative ? 0 : age.inMinutes;
+    final height = chainTip - ageInBlocks - _shieldedBirthdayRewindBlocks;
+    if (height < activationHeight) {
+      return activationHeight;
+    }
+    if (height > chainTip) {
+      return chainTip;
+    }
+    return height;
   }
 
   /// Override startSync to also sync shielded notes.
@@ -685,6 +952,7 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
 
     // Then sync shielded notes if Sapling is enabled
     if (saplingEnabled && _saplingKeyManager != null) {
+      _ensureShieldedHeaderSyncSubscription();
       try {
         await syncShielded();
 
@@ -694,7 +962,10 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
         // Trigger balance update to propagate to UI
         await updateBalance();
       } catch (e) {
-        printV('[PIVX] Shielded sync failed');
+        if (kDebugMode) {
+          printV('[PIVX] Shielded sync debug: ${e.runtimeType}: $e');
+        }
+        printV('[PIVX] Shielded sync failed: ${sanitizeShieldSyncError(e)}');
         // Don't fail the entire sync if shielded sync fails
       }
     }
@@ -733,6 +1004,138 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
 
     // Sync from the specified height (or activation height if not specified)
     await syncShielded(fromHeight: fromHeight, onProgress: onProgress);
+  }
+
+  Future<void> _advanceShieldedDiversifierIndexPastObservedNotes() async {
+    if (_saplingKeyManager == null || _shieldSyncEngine == null) {
+      return;
+    }
+
+    final observedAddressHexes = <String>{};
+    for (final note in _shieldSyncEngine!.storage.notes) {
+      final addressHex = _storedSaplingNoteAddressHex(note);
+      if (addressHex != null) {
+        observedAddressHexes.add(addressHex);
+      }
+    }
+    if (observedAddressHexes.isEmpty) {
+      return;
+    }
+
+    final nextIndex = await nextShieldedDiversifierIndexAfterObservedAddresses(
+      currentNextDiversifierIndex:
+          _shieldSyncEngine!.storage.nextDiversifierIndex,
+      observedAddressHexes: observedAddressHexes,
+      deriveAddressHex: (index) async {
+        final derived = await _saplingKeyManager!.deriveAddress(index);
+        return _decodeSaplingPaymentAddressHex(derived);
+      },
+    );
+    await _shieldSyncEngine!.storage
+        .advanceNextDiversifierIndexAtLeast(nextIndex);
+  }
+
+  @visibleForTesting
+  static Future<int> nextShieldedDiversifierIndexAfterObservedAddresses({
+    required int currentNextDiversifierIndex,
+    required Set<String> observedAddressHexes,
+    required Future<String?> Function(int index) deriveAddressHex,
+    int scanLimit = _shieldedRestoreAddressReuseScanLimit,
+  }) async {
+    final remainingObservedHexes =
+        observedAddressHexes.map((address) => address.toLowerCase()).toSet();
+    if (remainingObservedHexes.isEmpty) {
+      return currentNextDiversifierIndex;
+    }
+
+    var highestRecoveredIndex = currentNextDiversifierIndex - 1;
+    for (var index = 0;
+        index < scanLimit && remainingObservedHexes.isNotEmpty;
+        index++) {
+      final derivedHex = (await deriveAddressHex(index))?.toLowerCase();
+      if (derivedHex != null && remainingObservedHexes.remove(derivedHex)) {
+        highestRecoveredIndex = index;
+      }
+    }
+
+    final nextIndex = highestRecoveredIndex + 1;
+    return nextIndex > currentNextDiversifierIndex
+        ? nextIndex
+        : currentNextDiversifierIndex;
+  }
+
+  String? _storedSaplingNoteAddressHex(StoredSaplingNote note) {
+    final address = note.address;
+    if (address != null && _isHexOfLength(address, 86)) {
+      return address.toLowerCase();
+    }
+
+    final diversifier = note.diversifier;
+    final pkD = note.pkD;
+    if (_isHexOfLength(diversifier, 22) && _isHexOfLength(pkD, 64)) {
+      return '${diversifier!.toLowerCase()}${pkD!.toLowerCase()}';
+    }
+
+    return null;
+  }
+
+  bool _isHexOfLength(String? value, int length) {
+    if (value == null || value.length != length) {
+      return false;
+    }
+    return RegExp(r'^[0-9a-fA-F]+$').hasMatch(value);
+  }
+
+  String? _decodeSaplingPaymentAddressHex(String encodedAddress) {
+    try {
+      final decoded =
+          const Bech32Codec().decode(encodedAddress, encodedAddress.length);
+      final expectedHrp = network == PivxNetwork.testnet
+          ? PivxSaplingNetwork.testnetPaymentAddressHrp
+          : PivxSaplingNetwork.mainnetPaymentAddressHrp;
+      if (decoded.hrp != expectedHrp) {
+        return null;
+      }
+
+      final bytes = _convertBits(decoded.data, 5, 8, false);
+      if (bytes.length != kSaplingPaymentAddressSize) {
+        return null;
+      }
+      return hex.encode(bytes);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  List<int> _convertBits(List<int> data, int inBits, int outBits, bool pad) {
+    var value = 0;
+    var bits = 0;
+    final maxV = (1 << outBits) - 1;
+    final result = <int>[];
+
+    for (final dataValue in data) {
+      if (dataValue < 0 || dataValue >> inBits != 0) {
+        throw ArgumentError('Invalid Bech32 data value');
+      }
+
+      value = (value << inBits) | dataValue;
+      bits += inBits;
+
+      while (bits >= outBits) {
+        bits -= outBits;
+        result.add((value >> bits) & maxV);
+      }
+    }
+
+    if (pad) {
+      if (bits > 0) {
+        result.add((value << (outBits - bits)) & maxV);
+      }
+    } else if (bits >= inBits || ((value << (outBits - bits)) & maxV) != 0) {
+      throw ArgumentError('Invalid Bech32 padding');
+    }
+
+    return result;
   }
 
   /// Create a shielded transaction.
@@ -790,8 +1193,122 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
   /// [amount] - Amount to shield in zatoshis (null for all available).
   ///
   Future<SaplingTransactionResult> shieldFunds({int? amount}) async {
-    throw Exception(
-        'PIVX transparent-to-shielded sends are not supported yet.');
+    await initializeSapling();
+    final destination =
+        (await _saplingKeyManager!.getDefaultAddress()).encoded;
+    final built = await _buildShieldTransactionResult(
+      toAddress: destination,
+      requestedAmount: amount,
+      isSendAll: amount == null,
+    );
+    return built.result;
+  }
+
+  /// Build a t-to-z (shield) transaction spending transparent P2PKH UTXOs
+  /// into a Sapling output, with transparent change.
+  Future<_BuiltShieldTransaction> _buildShieldTransactionResult({
+    required String toAddress,
+    int? requestedAmount,
+    required bool isSendAll,
+    String? memo,
+  }) async {
+    await initializeSapling();
+    await _ensureShieldSyncEngineInitialized();
+
+    // Confirmed, spendable, standard P2PKH transparent UTXOs only.
+    final available = unspentCoins
+        .where((utx) =>
+            utx.isSending &&
+            !utx.isFrozen &&
+            (utx.confirmations ?? 0) > 0 &&
+            PivxNetwork.p2pkhScriptPubKeyHex(utx.bitcoinAddressRecord.address)
+                .isNotEmpty)
+        .toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    if (available.isEmpty) {
+      throw Exception('No spendable transparent PIVX coins available.');
+    }
+
+    List<BitcoinUnspent> selected;
+    int amount;
+    ShieldedSpendPlan plan;
+    if (isSendAll) {
+      selected = available;
+      final total = selected.fold<int>(0, (sum, utx) => sum + utx.value);
+      final fee = PivxFeePolicy.saplingFee(
+        saplingOutputs: 1,
+        transparentInputs: selected.length,
+      );
+      amount = total - fee;
+      if (amount < PivxFeePolicy.shieldedDustThreshold) {
+        throw Exception('Insufficient transparent balance after PIVX fee.');
+      }
+      plan = ShieldedSpendPlan(fee: fee, change: 0, canBuild: true);
+    } else {
+      amount = requestedAmount!;
+      if (amount < PivxFeePolicy.shieldedDustThreshold) {
+        throw Exception('Amount below PIVX shielded dust threshold');
+      }
+      selected = <BitcoinUnspent>[];
+      var total = 0;
+      plan = ShieldedSpendPlan(fee: 0, change: 0, canBuild: false);
+      for (final utx in available) {
+        selected.add(utx);
+        total += utx.value;
+        plan = SaplingTransactionBuilderWrapper.planShieldSpend(
+          totalInput: total,
+          amount: amount,
+          transparentInputs: selected.length,
+        );
+        if (plan.canBuild) break;
+      }
+      if (!plan.canBuild) {
+        throw Exception('Insufficient transparent balance for shield amount.');
+      }
+    }
+
+    final utxoMaps = selected.map((utx) {
+      final record = utx.bitcoinAddressRecord;
+      final chain = record.isHidden ? sideHd : hd;
+      final privateKey =
+          ECPrivate(chain.childKey(Bip32KeyIndex(record.index)).privateKey)
+              .toHex();
+      final scriptPubKey =
+          PivxNetwork.p2pkhScriptPubKeyHex(record.address);
+      return <String, dynamic>{
+        'txid': utx.hash,
+        'vout': utx.vout,
+        'value': utx.value,
+        'script_pubkey': scriptPubKey,
+        'private_key': privateKey,
+      };
+    }).toList(growable: false);
+
+    final changeAddress = plan.change > 0 ? walletAddresses.address : null;
+
+    final result = await _balanceLock.synchronized(() async {
+      _saplingTxBuilder ??= await SaplingTransactionBuilderFactory.create(
+        keyManager: _saplingKeyManager!,
+        syncEngine: _shieldSyncEngine!,
+        isTestnet: network == PivxNetwork.testnet,
+      );
+      await _ensureProvingParamsLoaded();
+      return await _saplingTxBuilder!.buildShieldTransaction(
+        utxos: utxoMaps,
+        toAddress: toAddress,
+        amount: amount,
+        memo: memo,
+        fee: plan.fee,
+        changeAddress: changeAddress,
+        change: plan.change,
+      );
+    });
+
+    return _BuiltShieldTransaction(
+      result: result,
+      amount: amount,
+      fee: result.fee,
+    );
   }
 
   /// Deshield funds.
@@ -805,8 +1322,15 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     required int amount,
     String? toAddress,
   }) async {
-    throw Exception(
-        'PIVX shielded-to-transparent sends are not supported yet.');
+    final destination = toAddress ?? walletAddresses.address;
+    if (_isShieldedAddress(destination)) {
+      throw Exception('Deshield destination must be a transparent address.');
+    }
+    return await createShieldedTransaction(
+      toAddress: destination,
+      amount: amount,
+      useShieldedInputs: true,
+    );
   }
 
   /// Ensures that the Sapling proving parameters are downloaded and loaded.
@@ -897,6 +1421,21 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     });
 
     final balances = await Future.wait(balanceFutures);
+
+    if (balances.any((balance) =>
+        balance['confirmed'] == null || balance['unconfirmed'] == null)) {
+      printV('[PIVX] Got malformed transparent balance response from server');
+      syncStatus = core_sync.LostConnectionSyncStatus();
+      final previousBalance = balance[currency];
+
+      return ElectrumBalance(
+        confirmed: previousBalance?.confirmed ?? 0,
+        unconfirmed: previousBalance?.unconfirmed ?? 0,
+        frozen: previousBalance?.frozen ?? 0,
+        secondConfirmed: shieldedBalance,
+        secondUnconfirmed: pendingShieldedBalance,
+      );
+    }
 
     for (var i = 0; i < balances.length; i++) {
       final balance = balances[i];
@@ -1291,8 +1830,9 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     }
 
     if (spendFromShielded && hasTransparentOutput) {
-      throw Exception(
-          'PIVX shielded-to-transparent sends are not supported yet.');
+      // z-to-t (deshield): spend shielded notes into a transparent payment
+      // output with shielded change, built by the Sapling builder.
+      return await _createShieldedPendingTransaction(transactionCredentials);
     }
 
     if (hasShieldedOutput) {
@@ -1307,9 +1847,10 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     return await super.createTransaction(credentials);
   }
 
-  /// Create a pending transaction for shielded outputs.
+  /// Create a pending transaction spending shielded notes.
   ///
-  /// This method only allows the currently implemented z-to-z route.
+  /// Supports the z-to-z route (shielded destination) and the z-to-t
+  /// deshield route (transparent destination with shielded change).
   /// Transparent-to-shielded routes must fail before construction until the
   /// builder is implemented and verified.
   Future<PendingTransaction> _createShieldedPendingTransaction(
@@ -1326,19 +1867,44 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
         output.isParsedAddress ? output.extractedAddress! : output.address;
     final memo = output.memo;
     final isSendAll = output.sendAll;
+    final transparentDestination = !_isShieldedAddress(toAddress);
 
     final coinType = credentials.coinTypeToSpendFrom;
     if (coinType != UnspentCoinType.sapling) {
-      throw Exception(
-          'PIVX transparent-to-shielded sends are not supported yet.');
+      // t-to-z (shield): spend transparent UTXOs into the Sapling output.
+      final built = await _buildShieldTransactionResult(
+        toAddress: toAddress,
+        requestedAmount: isSendAll ? null : output.formattedCryptoAmount!,
+        isSendAll: isSendAll,
+        memo: memo,
+      );
+      return PendingPivxShieldedTransaction(
+        result: built.result,
+        electrumClient: electrumClient,
+        amount: built.amount,
+        fee: built.fee,
+        onCommit: (tx) async {
+          try {
+            await updateAllUnspents();
+            await updateBalance();
+          } catch (_) {}
+          try {
+            await syncShielded();
+          } catch (e) {
+            printV(
+                '[PIVX Sapling] Shielded post-broadcast sync failed: ${sanitizeShieldSyncError(e)}');
+          }
+        },
+      );
     }
 
     // Initialize sapling to get accurate balances
     await initializeSapling();
     await _ensureShieldSyncEngineInitialized();
 
-    final amount =
-        isSendAll ? _shieldedSendAllAmount() : output.formattedCryptoAmount!;
+    final amount = isSendAll
+        ? _shieldedSendAllAmount(transparentDestination: transparentDestination)
+        : output.formattedCryptoAmount!;
 
     // Check if we have sufficient shielded balance
     final hasShieldedFunds = shieldedBalance >= amount;
@@ -1378,8 +1944,9 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
 
           try {
             await syncShielded();
-          } catch (_) {
-            printV('[PIVX Sapling] Shielded post-broadcast sync failed');
+          } catch (e) {
+            printV(
+                '[PIVX Sapling] Shielded post-broadcast sync failed: ${sanitizeShieldSyncError(e)}');
           }
         },
       );
@@ -1388,7 +1955,7 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     throw Exception('Insufficient shielded balance.');
   }
 
-  int _shieldedSendAllAmount() {
+  int _shieldedSendAllAmount({bool transparentDestination = false}) {
     final notes = _shieldSyncEngine!.storage.spendableNotesAt(
       chainHeight: _shieldSyncEngine!.storage.lastSyncedHeight,
     );
@@ -1399,10 +1966,14 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     final total = notes.fold<int>(0, (sum, note) => sum + note.value);
     final fee = PivxFeePolicy.saplingFee(
       saplingInputs: notes.length,
-      saplingOutputs: 1,
+      saplingOutputs: transparentDestination ? 0 : 1,
+      transparentOutputs: transparentDestination ? 1 : 0,
     );
     final amount = total - fee;
-    if (amount < PivxFeePolicy.shieldedDustThreshold) {
+    final dustFloor = transparentDestination
+        ? PivxFeePolicy.transparentDustThreshold
+        : PivxFeePolicy.shieldedDustThreshold;
+    if (amount < dustFloor) {
       throw Exception('Insufficient shielded balance after PIVX fee.');
     }
 
@@ -1457,4 +2028,17 @@ abstract class PivxWalletBase extends ElectrumWallet with Store {
     final coinbase = firstVin['coinbase'];
     return coinbase != null;
   }
+}
+
+/// Built t-to-z shield transaction with its planned amount and fee.
+class _BuiltShieldTransaction {
+  _BuiltShieldTransaction({
+    required this.result,
+    required this.amount,
+    required this.fee,
+  });
+
+  final SaplingTransactionResult result;
+  final int amount;
+  final int fee;
 }

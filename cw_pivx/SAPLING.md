@@ -114,37 +114,59 @@ Data models for notes:
 
 ## ElectrumX Sapling APIs
 
-The ShieldSyncEngine uses these Sapling-specific ElectrumX RPCs via `PIVXSaplingElectrumX`:
+The ShieldSyncEngine uses the versioned PIVX Sapling ElectrumX v1 contract via
+`PIVXSaplingElectrumX`. The reported primary contract id is
+`pivx.sapling.electrumx.v1`, discovered through:
 
 | RPC Method | Description |
 |------------|-------------|
-| `blockchain.sapling.get_nullifier_status` | Check if nullifier is spent |
-| `blockchain.sapling.get_commitment_info` | Get commitment details |
-| `blockchain.sapling.get_outputs_by_height` | Get shielded outputs (max 100 blocks, 5000 outputs) |
-| `blockchain.sapling.get_block_range` | Get blocks with Sapling txs (pivx-shield format) |
-| `blockchain.sapling.get_anchor_height` | Get block height for anchor |
-| `blockchain.sapling.get_best_anchor` | Get current best anchor |
+| `blockchain.sapling.capabilities` | Primary v1 capability probe for network, activation height, contract/server/Core versions, supported methods, max range, block-hash support, and structured-error support |
+| `blockchain.sapling.get_block_range` | Returns a v1 envelope with `complete`, requested range metadata, `block_hashes`, and Sapling transaction blocks |
+| `blockchain.sapling.get_nullifier_status` | Check if a nullifier is spent |
+| `blockchain.sapling.get_commitment_info` | Get commitment details, including canonical global Sapling output position when available |
+| `blockchain.sapling.get_best_anchor` | Get current anchor metadata for shielded spending |
+| `blockchain.sapling.get_witness` | Get anchor-bound witness data with anchor/root, anchor height, note position, path, and commitment |
+
+The Dart client still contains compatibility fallbacks for older method names
+such as `blockchain.sapling.get_capabilities`,
+`blockchain.nullifier.get_spend`, `blockchain.commitment.get_info`,
+`blockchain.sapling.get_outputs_by_height`, `blockchain.sapling.get_outputs`,
+`blockchain.sapling.get_anchor_height`, `blockchain.anchor.get_height`, and
+`blockchain.sapling.get_tree_state`. These are compatibility paths only; they
+are not sufficient release evidence for PIVX shielded support unless the node
+also satisfies the v1 capability/envelope/global-position/anchor-bound witness
+contract.
 
 ### Rate Limits
 
-- `get_outputs_by_height`: Max 100 blocks, 5000 outputs per request
-- `get_block_range`: Max 100 blocks per request
+- `get_block_range`: Max 100 blocks per request under the reported v1 contract.
+- Legacy output-range methods may advertise their own output/range limits and
+  must not be treated as full v1 release readiness.
 
 ### Sync Flow
 
-1. **Initial sync from checkpoint:**
-   - Client loads commitment tree checkpoint
-   - Call `getBlockRange(checkpoint_height + 1, current_height)` in batches
+1. **Capability and checkpoint setup:**
+   - Probe `blockchain.sapling.capabilities`, falling back only for legacy compatibility
+   - Validate network and Sapling activation height
+   - Client loads trusted local `nextTreePosition` or requires explicit server global positions
 
 2. **Process blocks:**
+   - Call `getBlockRange(checkpoint_height + 1, current_height)` in batches
+   - Require complete v1 envelopes for v1 nodes and reject failed/partial ranges
+   - Persist returned block hashes for the scanned range
    - Pass returned blocks to native engine for trial decryption
-   - Native engine builds commitment tree and witnesses
+   - Native engine builds commitment tree and witnesses using canonical global output positions
 
 3. **Check for spent notes:**
    - Call `getNullifierStatus(nullifier)` for each owned note
 
 4. **Get current state:**
    - Call `getBestAnchor()` for spending proofs
+   - Fetch witnesses bound to that anchor and verify returned root/height/commitment/position metadata
+
+5. **Reorg detection:**
+   - On resume, compare the last 100 scanned shielded heights against v1 `block_hashes`
+   - Rewind to the last matching height and rescan when a mismatch is detected
 
 ## Native Library Requirements
 
@@ -256,10 +278,12 @@ Sapling proofs require two parameter files:
 
 | File | Size | Hash (SHA256) |
 |------|------|---------------|
-| sapling-spend.params | ~47.5 MB | `8270785a...` |
-| sapling-output.params | ~3.6 MB | `657e3d38...` |
+| sapling-spend.params | 47,958,396 bytes | `8e48ffd23abb3a5fd9c5589204f32d9c31285a04b78096ba40a79b75677efc13` |
+| sapling-output.params | 3,592,860 bytes | `2f0ebbcbb9bb0bcffe95a397e7eba89c29eb4dde6191c339db88570e3f3fb0e4` |
 
-Downloaded from: `https://download.z.cash/downloads/`
+Downloaded from the configured PIVX-hosted URLs:
+- `https://duddino.com/sapling-spend.params`
+- `https://duddino.com/sapling-output.params`
 
 ## Security Considerations
 
@@ -321,8 +345,27 @@ bash scripts/build_linux.sh
 |----------|--------|
 | iOS | `ios/Frameworks/cw_pivx_sapling.xcframework` |
 | Android | `android/src/main/jniLibs/{arch}/libcw_pivx_sapling.so` |
-| macOS | `macos/libcw_pivx_sapling.dylib` |
+| macOS | `macos/Frameworks/libcw_pivx_sapling.dylib` |
 | Linux | `linux/libcw_pivx_sapling.so` |
+
+### Runtime Native Self-Test
+
+Run the Dart native self-test after rebuilding artifacts and before packaging:
+
+```bash
+fvm dart run tool/pivx_sapling_native_self_test.dart
+```
+
+To verify a specific rebuilt artifact:
+
+```bash
+PIVX_SAPLING_LIBRARY_PATH=/absolute/path/to/libcw_pivx_sapling.dylib \
+  fvm dart run tool/pivx_sapling_native_self_test.dart
+```
+
+Expected result: `passed: true`, `loaded: true`, `symbols_ready: true`,
+and `fee_matches_policy: true`. A fee mismatch means the native artifact is
+stale relative to the Core-derived Dart/Rust fee policy and must be rebuilt.
 
 ## References
 

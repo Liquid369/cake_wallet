@@ -17,6 +17,10 @@ dependencies:
   mobx: ^2.0.7+4
   flutter_mobx: ^2.0.6+1
   ffi: ^2.1.0
+  crypto: ^3.0.2
+  bech32:
+    git:
+      url: https://github.com/cake-tech/bech32.git
   synchronized: ^3.1.0
   cw_core:
     path: ../cw_core

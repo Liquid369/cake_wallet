@@ -17,6 +17,37 @@ class PivxShieldedConfirmationPolicy {
   static const int spendConfirmations = 6;
 }
 
+/// Count-only shielded spend eligibility diagnostics.
+///
+/// This intentionally avoids values, txids, commitments, nullifiers, and
+/// addresses so release/debug logs can explain selection failures without
+/// exposing wallet metadata.
+class PivxShieldedSpendEligibilitySummary {
+  final int chainHeight;
+  final int minConfirmations;
+  final int totalUnspent;
+  final int spendable;
+  final int pendingConfirmation;
+  final int pendingSpend;
+  final int missingSpendingData;
+
+  const PivxShieldedSpendEligibilitySummary({
+    required this.chainHeight,
+    required this.minConfirmations,
+    required this.totalUnspent,
+    required this.spendable,
+    required this.pendingConfirmation,
+    required this.pendingSpend,
+    required this.missingSpendingData,
+  });
+
+  String get sanitizedLogLine =>
+      'chain_height=$chainHeight min_confirmations=$minConfirmations '
+      'total_unspent=$totalUnspent spendable=$spendable '
+      'pending_confirmations=$pendingConfirmation '
+      'pending_spend=$pendingSpend missing_spending_data=$missingSpendingData';
+}
+
 /// Represents a stored Sapling note.
 class StoredSaplingNote {
   /// Unique identifier (txid:index).
@@ -373,6 +404,43 @@ class SaplingNoteStorage {
     ).fold<int>(0, (sum, note) => sum + note.value);
   }
 
+  PivxShieldedSpendEligibilitySummary spendEligibilitySummaryAt({
+    required int chainHeight,
+    int minConfirmations = PivxShieldedConfirmationPolicy.spendConfirmations,
+  }) {
+    var pendingConfirmation = 0;
+    var pendingSpend = 0;
+    var missingSpendingData = 0;
+    var spendable = 0;
+
+    final unspent = _notes.where((note) => !note.isSpent).toList();
+    for (final note in unspent) {
+      if (note.isPendingSpend) {
+        pendingSpend++;
+        continue;
+      }
+      if (!note.hasSpendingData) {
+        missingSpendingData++;
+        continue;
+      }
+      if (!note.isConfirmedAt(chainHeight, minConfirmations)) {
+        pendingConfirmation++;
+        continue;
+      }
+      spendable++;
+    }
+
+    return PivxShieldedSpendEligibilitySummary(
+      chainHeight: chainHeight,
+      minConfirmations: minConfirmations,
+      totalUnspent: unspent.length,
+      spendable: spendable,
+      pendingConfirmation: pendingConfirmation,
+      pendingSpend: pendingSpend,
+      missingSpendingData: missingSpendingData,
+    );
+  }
+
   /// Get locally reserved outgoing value.
   int get pendingOutgoingBalance =>
       pendingSpentNotes.fold<int>(0, (sum, n) => sum + n.value);
@@ -661,6 +729,32 @@ class SaplingNoteStorage {
     });
   }
 
+  /// Clear local pending-spend reservations.
+  ///
+  /// This is intended for debug/test recovery when a locally constructed
+  /// transaction was not accepted by the node but older code already reserved
+  /// its nullifiers.
+  Future<int> clearPendingSpentNotes() async {
+    return await _lock.synchronized(() async {
+      var clearedValue = 0;
+
+      for (final note in _notes) {
+        if (!note.isPendingSpend || note.isSpent) continue;
+
+        note.isPendingSpend = false;
+        note.pendingSpendingTxid = null;
+        note.pendingSpendAt = null;
+        clearedValue += note.value;
+      }
+
+      if (clearedValue > 0) {
+        await _save();
+      }
+
+      return clearedValue;
+    });
+  }
+
   /// Update the last synced height (thread-safe).
   Future<void> setLastSyncedHeight(int height) async {
     await _lock.synchronized(() async {
@@ -758,6 +852,16 @@ class SaplingNoteStorage {
     final index = _nextDiversifierIndex;
     _nextDiversifierIndex++;
     return index;
+  }
+
+  /// Advance the next shielded receive index without moving it backwards.
+  Future<void> advanceNextDiversifierIndexAtLeast(int nextIndex) async {
+    if (nextIndex <= _nextDiversifierIndex) {
+      return;
+    }
+
+    _nextDiversifierIndex = nextIndex;
+    await save();
   }
 
   /// Update an address label.

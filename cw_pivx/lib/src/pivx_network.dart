@@ -215,6 +215,29 @@ class PivxNetwork implements BasedUtxoNetwork {
   /// - 'EXM...' - Exchange addresses (3-byte version: [0x01, 0xb9, 0xa2])
   /// - 'S...' - Staking addresses (1-byte version: 63)
   /// - 'ps1...' - Sapling shielded addresses (not handled here)
+  /// Build the 25-byte P2PKH scriptPubKey hex for a standard PIVX
+  /// transparent address ('D...' mainnet, 'x.../y...' testnet).
+  /// Returns an empty string for unsupported address shapes.
+  static String p2pkhScriptPubKeyHex(String address) {
+    try {
+      final decoded = Base58Decoder.checkDecode(address);
+      if (decoded.length != 21) return '';
+      final pubkeyHash = decoded.sublist(1);
+      final script = Uint8List(25);
+      script[0] = 0x76; // OP_DUP
+      script[1] = 0xa9; // OP_HASH160
+      script[2] = 0x14; // push 20 bytes
+      script.setRange(3, 23, pubkeyHash);
+      script[23] = 0x88; // OP_EQUALVERIFY
+      script[24] = 0xac; // OP_CHECKSIG
+      return script
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
+    } catch (_) {
+      return '';
+    }
+  }
+
   static String computeScriptHash(String address) {
     try {
       // Decode base58check address to get version byte(s) + pubkey hash

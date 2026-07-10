@@ -5,14 +5,13 @@
 ///
 /// ## API Methods
 ///
-/// - `blockchain.nullifier.get_spend` - Check if nullifier is spent
-/// - `blockchain.commitment.get_info` - Get commitment details
-/// - `blockchain.sapling.get_outputs` - Get shielded outputs for trial decryption
-/// - `blockchain.sapling.get_block_range` - Get blocks with Sapling txs
-/// - `blockchain.sapling.get_nullifiers` - Get nullifiers in height range
-/// - `blockchain.sapling.get_tree_state` - Get tree state at height
-/// - `blockchain.sapling.get_witness` - Get Merkle witness for spending
-/// - `blockchain.anchor.get_height` - Get height for anchor
+/// - `blockchain.sapling.capabilities` - Probe v1 Sapling RPC contract metadata
+/// - `blockchain.sapling.get_block_range` - Get v1 block-range envelopes
+/// - `blockchain.sapling.get_nullifier_status` - Check if nullifier is spent
+/// - `blockchain.sapling.get_commitment_info` - Get commitment details
+/// - `blockchain.sapling.get_best_anchor` - Get current anchor metadata
+/// - `blockchain.sapling.get_witness` - Get anchor-bound Merkle witness data
+/// - legacy aliases remain as fallbacks until default nodes expose v1 metadata
 ///
 /// ## Activation Heights
 ///
@@ -21,6 +20,7 @@
 
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
+import 'package:cw_core/utils/print_verbose.dart';
 
 int? _optionalInt(Object? value) {
   if (value == null) return null;
@@ -36,12 +36,16 @@ String? _optionalString(Object? value) {
   return text.isEmpty ? null : text;
 }
 
+const String _v1LiveProbeHex32 =
+    '0000000000000000000000000000000000000000000000000000000000000000';
+
 /// Helper class for batch fetch results.
 class _BatchResult {
   final List<SaplingBlock> blocks;
+  final int startHeight;
   final int endHeight;
   final Map<int, String> blockHashes;
-  _BatchResult(this.blocks, this.endHeight, this.blockHashes);
+  _BatchResult(this.blocks, this.startHeight, this.endHeight, this.blockHashes);
 }
 
 class SaplingRpcException implements Exception {
@@ -55,6 +59,9 @@ class SaplingRpcException implements Exception {
 }
 
 class SaplingRpcCapabilities {
+  static const String v1ContractId = 'pivx.sapling.electrumx.v1';
+  static const String legacyBlockRangeContractId = 'legacy.block_range';
+
   final bool supportsBlockRange;
   final bool supportsGlobalOutputPositions;
   final bool supportsBestAnchor;
@@ -68,6 +75,14 @@ class SaplingRpcCapabilities {
   final String? serverVersion;
   final String? pivxCoreVersion;
   final Set<String> methods;
+
+  static const Set<String> requiredV1Methods = {
+    'blockchain.sapling.get_block_range',
+    'blockchain.sapling.get_best_anchor',
+    'blockchain.sapling.get_witness',
+    'blockchain.sapling.get_nullifier_status',
+    'blockchain.sapling.get_commitment_info',
+  };
 
   const SaplingRpcCapabilities({
     required this.supportsBlockRange,
@@ -148,12 +163,27 @@ class SaplingRpcCapabilities {
     );
   }
 
+  bool get advertisesV1Contract => contract?.toLowerCase() == v1ContractId;
+
+  bool get supportsV1ReleaseContract =>
+      advertisesV1Contract &&
+      supportsBlockRange &&
+      supportsGlobalOutputPositions &&
+      supportsBestAnchor &&
+      supportsWitness &&
+      supportsBlockHashes &&
+      supportsStructuredErrors &&
+      methods.containsAll(requiredV1Methods);
+
+  bool get isLegacyBlockRangeOnly => contract == legacyBlockRangeContractId;
+
   static SaplingRpcCapabilities legacyBlockRangeOnly() =>
       const SaplingRpcCapabilities(
         supportsBlockRange: true,
         supportsGlobalOutputPositions: false,
         supportsBestAnchor: false,
         supportsWitness: false,
+        contract: legacyBlockRangeContractId,
       );
 }
 
@@ -500,9 +530,22 @@ class BestAnchorResult {
   });
 
   factory BestAnchorResult.fromJson(Map<String, dynamic> json) {
+    final anchor = json['anchor'] as String? ?? json['root'] as String?;
+    final height = _optionalInt(json['anchor_height']) ??
+        _optionalInt(json['anchorHeight']) ??
+        _optionalInt(json['height']);
+    if (anchor == null || anchor.isEmpty) {
+      throw SaplingRpcException(
+          'PIVX Sapling best-anchor response has no anchor');
+    }
+    if (height == null) {
+      throw SaplingRpcException(
+          'PIVX Sapling best-anchor response has no anchor height');
+    }
+
     return BestAnchorResult(
-      anchor: json['anchor'] as String,
-      height: json['height'] as int,
+      anchor: anchor,
+      height: height,
     );
   }
 
@@ -512,11 +555,56 @@ class BestAnchorResult {
 
 /// Anchor-bound Merkle witness for spend proof construction.
 class SaplingWitnessResult {
+  static const String sourceUnknown = 'unknown';
+  static const String sourceAnchorBound = 'anchor_bound';
+  static const String sourceCommitmentOnlyFallback = 'commitment_only_fallback';
+  static const int saplingTreeDepth = 32;
+  static const int saplingNodeHexLength = 64;
+  static final BigInt _jubjubBaseFieldModulus = BigInt.parse(
+      '73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001',
+      radix: 16);
+  static const List<String> _emptyRoots = [
+    '0100000000000000000000000000000000000000000000000000000000000000',
+    '817de36ab2d57feb077634bca77819c8e0bd298c04f6fed0e6a83cc1356ca155',
+    'ffe9fc03f18b176c998806439ff0bb8ad193afdb27b2ccbc88856916dd804e34',
+    'd8283386ef2ef07ebdbb4383c12a739a953a4d6e0d6fb1139a4036d693bfbb6c',
+    'e110de65c907b9dea4ae0bd83a4b0a51bea175646a64c12b4c9f931b2cb31b49',
+    '912d82b2c2bca231f71efcf61737fbf0a08befa0416215aeef53e8bb6d23390a',
+    '8ac9cf9c391e3fd42891d27238a81a8a5c1d3a72b1bcbea8cf44a58ce7389613',
+    'd6c639ac24b46bd19341c91b13fdcab31581ddaf7f1411336a271f3d0aa52813',
+    '7b99abdc3730991cc9274727d7d82d28cb794edbc7034b4f0053ff7c4b680444',
+    '43ff5457f13b926b61df552d4e402ee6dc1463f99a535f9a713439264d5b616b',
+    'ba49b659fbd0b7334211ea6a9d9df185c757e70aa81da562fb912b84f49bce72',
+    '4777c8776a3b1e69b73a62fa701fa4f7a6282d9aee2c7a6b82e7937d7081c23c',
+    'ec677114c27206f5debc1c1ed66f95e2b1885da5b7be3d736b1de98579473048',
+    '1b77dac4d24fb7258c3c528704c59430b630718bec486421837021cf75dab651',
+    'bd74b25aacb92378a871bf27d225cfc26baca344a1ea35fdd94510f3d157082c',
+    'd6acdedf95f608e09fa53fb43dcd0990475726c5131210c9e5caeab97f0e642f',
+    '1ea6675f9551eeb9dfaaa9247bc9858270d3d3a4c5afa7177a984d5ed1be2451',
+    '6edb16d01907b759977d7650dad7e3ec049af1a3d875380b697c862c9ec5d51c',
+    'cd1c8dbf6e3acc7a80439bc4962cf25b9dce7c896f3a5bd70803fc5a0e33cf00',
+    '6aca8448d8263e547d5ff2950e2ed3839e998d31cbc6ac9fd57bc6002b159216',
+    '8d5fa43e5a10d11605ac7430ba1f5d81fb1b68d29a640405767749e841527673',
+    '08eeab0c13abd6069e6310197bf80f9c1ea6de78fd19cbae24d4a520e6cf3023',
+    '0769557bc682b1bf308646fd0b22e648e8b9e98f57e29f5af40f6edb833e2c49',
+    '4c6937d78f42685f84b43ad3b7b00f81285662f85c6a68ef11d62ad1a3ee0850',
+    'fee0e52802cb0c46b1eb4d376c62697f4759f6c8917fa352571202fd778fd712',
+    '16d6252968971a83da8521d65382e61f0176646d771c91528e3276ee45383e4a',
+    'd2e1642c9a462229289e5b0e3b7f9008e0301cbb93385ee0e21da2545073cb58',
+    'a5122c08ff9c161d9ca6fc462073396c7d7d38e8ee48cdb3bea7e2230134ed6a',
+    '28e7b841dcbc47cceb69d7cb8d94245fb7cb2ba3a7a6bc18f13f945f7dbd6e2a',
+    'e1f34b034d4a3cd28557e2907ebf990c918f64ecb50a94f01d6fda5ca5c7ef72',
+    '12935f14b676509b81eb49ef25f39269ed72309238b4c145803544b646dca62d',
+    'b2eed031d4d6a4f02a097f80b54cc1541d4163c6b6f5971f88b6e41d35c53814',
+    'fbc2f4300c01f0b7820d00e3347c8da4ee614674376cbc45359daa54f9b5493e',
+  ];
+
   final int position;
   final List<String> path;
   final String anchor;
   final int anchorHeight;
   final String commitment;
+  final String source;
   final Map<String, dynamic> raw;
 
   SaplingWitnessResult({
@@ -525,11 +613,13 @@ class SaplingWitnessResult {
     required this.anchor,
     required this.anchorHeight,
     required this.commitment,
+    this.source = sourceUnknown,
     required this.raw,
   });
 
   factory SaplingWitnessResult.fromJson(Map<String, dynamic> json) {
-    final path = json['path'] as List<dynamic>?;
+    final rawPath = _normalizeWitnessPath(json['path'] ?? json['witness']);
+    final path = _expandWitnessPath(rawPath);
     final anchor = json['anchor'] as String? ?? json['root'] as String?;
     final anchorHeight = _optionalInt(json['anchor_height']) ??
         _optionalInt(json['height']) ??
@@ -541,8 +631,12 @@ class SaplingWitnessResult {
         _optionalInt(json['tree_position']) ??
         _optionalInt(json['global_position']);
 
-    if (path == null || path.isEmpty) {
+    if (rawPath == null || rawPath.isEmpty) {
       throw SaplingRpcException('PIVX Sapling witness response has no path');
+    }
+    if (path == null) {
+      throw SaplingRpcException(
+          'PIVX Sapling witness response has invalid path');
     }
     if (anchor == null || anchor.isEmpty) {
       throw SaplingRpcException('PIVX Sapling witness response has no anchor');
@@ -562,12 +656,157 @@ class SaplingWitnessResult {
 
     return SaplingWitnessResult(
       position: position,
-      path: path.map((e) => e.toString()).toList(),
+      path: path,
       anchor: anchor,
       anchorHeight: anchorHeight,
       commitment: commitment,
+      source: _optionalString(json['source']) ?? sourceUnknown,
       raw: Map<String, dynamic>.from(json),
     );
+  }
+
+  SaplingWitnessResult withSource(String source) => SaplingWitnessResult(
+        position: position,
+        path: path,
+        anchor: anchor,
+        anchorHeight: anchorHeight,
+        commitment: commitment,
+        source: source,
+        raw: {
+          ...raw,
+          'source': source,
+        },
+      );
+
+  static List<String>? _normalizeWitnessPath(Object? rawPath) {
+    if (rawPath == null) return null;
+    if (rawPath is String) {
+      final normalized = _normalizeWitnessPathElement(rawPath);
+      return normalized == null ? null : <String>[normalized];
+    }
+    if (rawPath is! List) return null;
+
+    final path = <String>[];
+    for (final element in rawPath) {
+      final normalized = _normalizeWitnessPathElement(element);
+      if (normalized == null) return null;
+      path.add(normalized);
+    }
+    return path;
+  }
+
+  static String? _normalizeWitnessPathElement(Object? element) {
+    if (element == null) return null;
+    if (element is String) {
+      return element;
+    }
+    if (element is Map) {
+      for (final key in const [
+        'hash',
+        'hex',
+        'node',
+        'sibling',
+        'value',
+        'cmu',
+      ]) {
+        final value = element[key];
+        if (value is String && value.isNotEmpty) {
+          return value;
+        }
+      }
+      return null;
+    }
+    if (element is List) {
+      for (final value in element) {
+        if (value is String && value.isNotEmpty) {
+          return value;
+        }
+      }
+    }
+    return null;
+  }
+
+  static List<String>? _expandWitnessPath(List<String>? rawPath) {
+    if (rawPath == null || rawPath.isEmpty) return rawPath;
+    final path = _splitWitnessPath(rawPath);
+    if (path == null || path.length > saplingTreeDepth) return null;
+
+    final expanded = _padWitnessPath(path);
+    final invalidIndex = _firstNonCanonicalNodeIndex(expanded);
+    if (invalidIndex == null) return expanded;
+
+    final reversedPath = path.map(_reverseNodeHex).toList(growable: false);
+    final reversedExpanded = _padWitnessPath(reversedPath);
+    final reversedInvalidIndex = _firstNonCanonicalNodeIndex(reversedExpanded);
+    if (reversedInvalidIndex == null) {
+      printV('[PIVX Sapling] Witness path byte order corrected');
+      return reversedExpanded;
+    }
+
+    final originalCanonical = path
+        .where((node) => _littleEndianHexToBigInt(node) < _jubjubBaseFieldModulus)
+        .length;
+    final reversedCanonical = reversedPath
+        .where((node) => _littleEndianHexToBigInt(node) < _jubjubBaseFieldModulus)
+        .length;
+    printV(
+        '[PIVX Sapling] Witness path has non-canonical node at index $invalidIndex; canonical_original=$originalCanonical/${path.length}, canonical_reversed=$reversedCanonical/${reversedPath.length}');
+    return null;
+  }
+
+  static List<String>? _splitWitnessPath(List<String> rawPath) {
+    final path = <String>[];
+    for (final element in rawPath) {
+      final hexElement = element.trim();
+      if (hexElement.isEmpty ||
+          hexElement.length % saplingNodeHexLength != 0 ||
+          !RegExp(r'^[0-9a-fA-F]+$').hasMatch(hexElement)) {
+        return null;
+      }
+      for (var offset = 0;
+          offset < hexElement.length;
+          offset += saplingNodeHexLength) {
+        path.add(hexElement
+            .substring(offset, offset + saplingNodeHexLength)
+            .toLowerCase());
+      }
+    }
+    return path;
+  }
+
+  static List<String> _padWitnessPath(List<String> path) {
+    final expanded = List<String>.from(path);
+    if (path.length < saplingTreeDepth) {
+      expanded.addAll(_emptyRoots.skip(path.length).take(
+            saplingTreeDepth - path.length,
+          ));
+    }
+    return expanded;
+  }
+
+  static int? _firstNonCanonicalNodeIndex(List<String> path) {
+    for (var i = 0; i < path.length; i++) {
+      if (_littleEndianHexToBigInt(path[i]) >= _jubjubBaseFieldModulus) {
+        return i;
+      }
+    }
+    return null;
+  }
+
+  static BigInt _littleEndianHexToBigInt(String hexValue) {
+    final buffer = StringBuffer();
+    for (var offset = hexValue.length; offset > 0; offset -= 2) {
+      buffer.write(hexValue.substring(offset - 2, offset));
+    }
+    return BigInt.parse(buffer.toString(), radix: 16);
+  }
+
+  static String _reverseNodeHex(String hexValue) {
+    final buffer = StringBuffer();
+    for (var offset = hexValue.length; offset > 0; offset -= 2) {
+      buffer.write(hexValue.substring(offset - 2, offset));
+    }
+    return buffer.toString();
   }
 }
 
@@ -597,17 +836,42 @@ class PIVXSaplingElectrumX {
   Future<dynamic> _callFirstSupported({
     required List<String> methods,
     required List<Object> params,
+    bool fallbackOnServerError = false,
   }) async {
     Object? lastError;
     for (final method in methods) {
       try {
-        return await _client.call(method: method, params: params);
+        int? requestId;
+        final result = await _client.call(
+          method: method,
+          params: params,
+          idCallback: (id) => requestId = id,
+        );
+        final errorMessage = _errorMessageForRequest(requestId);
+        if (errorMessage != null) {
+          throw SaplingRpcException(errorMessage);
+        }
+        return result;
       } catch (e) {
         lastError = e;
-        if (!_looksLikeUnsupportedMethod(e)) rethrow;
+        if (!_looksLikeUnsupportedMethod(e) &&
+            !(fallbackOnServerError && _looksLikeServerMethodFailure(e))) {
+          rethrow;
+        }
       }
     }
     throw SaplingRpcException('PIVX Sapling RPC method unavailable', lastError);
+  }
+
+  String? _errorMessageForRequest(int? requestId) {
+    if (requestId == null) return null;
+    try {
+      final message = _client.getErrorMessage(requestId);
+      if (message is String && message.isNotEmpty) {
+        return message;
+      }
+    } catch (_) {}
+    return null;
   }
 
   bool _looksLikeUnsupportedMethod(Object error) {
@@ -617,6 +881,12 @@ class PIVXSaplingElectrumX {
         text.contains('unsupported') ||
         text.contains('not implemented') ||
         text.contains('method unavailable');
+  }
+
+  bool _looksLikeServerMethodFailure(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('internal server error') ||
+        text.contains('server error');
   }
 
   /// Probe the Sapling RPC policy/capabilities for the active node.
@@ -630,6 +900,7 @@ class PIVXSaplingElectrumX {
           'blockchain.sapling.get_capabilities',
         ],
         params: <Object>[],
+        fallbackOnServerError: true,
       );
       if (result is! Map) {
         throw SaplingRpcException(
@@ -640,6 +911,11 @@ class PIVXSaplingElectrumX {
       if (!capabilities.supportsBlockRange) {
         throw SaplingRpcException(
             'PIVX Sapling node does not advertise get_block_range');
+      }
+      if (capabilities.advertisesV1Contract &&
+          !capabilities.supportsV1ReleaseContract) {
+        throw SaplingRpcException(
+            'PIVX Sapling node advertises v1 but is missing required release contract features');
       }
       if (capabilities.network != null) {
         final expected = isTestnet ? 'testnet' : 'mainnet';
@@ -653,6 +929,9 @@ class PIVXSaplingElectrumX {
         throw SaplingRpcException(
             'PIVX Sapling activation height mismatch for current network');
       }
+      if (capabilities.supportsV1ReleaseContract) {
+        await _validateLiveV1ReleaseMethods();
+      }
       _capabilities = capabilities;
       return capabilities;
     } catch (e) {
@@ -663,6 +942,45 @@ class PIVXSaplingElectrumX {
       await getBlockRange(activationHeight, endHeight: activationHeight);
       _capabilities = SaplingRpcCapabilities.legacyBlockRangeOnly();
       return _capabilities!;
+    }
+  }
+
+  Future<void> _validateLiveV1ReleaseMethods() async {
+    try {
+      final anchorResult = await _callFirstSupported(
+        methods: const ['blockchain.sapling.get_best_anchor'],
+        params: <Object>[],
+      );
+      if (anchorResult is! Map) {
+        throw SaplingRpcException(
+            'get_best_anchor returned ${anchorResult.runtimeType}');
+      }
+      BestAnchorResult.fromJson(Map<String, dynamic>.from(anchorResult));
+
+      final nullifierResult = await _callFirstSupported(
+        methods: const ['blockchain.sapling.get_nullifier_status'],
+        params: const <Object>[_v1LiveProbeHex32],
+      );
+      if (nullifierResult is! Map) {
+        throw SaplingRpcException(
+            'get_nullifier_status returned ${nullifierResult.runtimeType}');
+      }
+      NullifierStatus.fromJson(Map<String, dynamic>.from(nullifierResult));
+
+      final commitmentResult = await _callFirstSupported(
+        methods: const ['blockchain.sapling.get_commitment_info'],
+        params: const <Object>[_v1LiveProbeHex32],
+      );
+      if (commitmentResult is! Map) {
+        throw SaplingRpcException(
+            'get_commitment_info returned ${commitmentResult.runtimeType}');
+      }
+      CommitmentInfo.fromJson(Map<String, dynamic>.from(commitmentResult));
+    } catch (e) {
+      throw SaplingRpcException(
+        'PIVX Sapling node advertises v1 but live release method validation failed',
+        e,
+      );
     }
   }
 
@@ -742,8 +1060,8 @@ class PIVXSaplingElectrumX {
     final params = <Object>[startHeight];
     if (endHeight != null) params.add(endHeight);
 
-    final result = await _client.call(
-      method: 'blockchain.sapling.get_block_range',
+    final result = await _callFirstSupported(
+      methods: const ['blockchain.sapling.get_block_range'],
       params: params,
     );
 
@@ -790,9 +1108,17 @@ class PIVXSaplingElectrumX {
       );
     }
 
-    final blocks = blocksResult
-        .map((e) => SaplingBlock.fromJson(e as Map<String, dynamic>))
-        .toList();
+    final List<SaplingBlock> blocks;
+    try {
+      blocks = blocksResult
+          .map((e) => SaplingBlock.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } catch (e) {
+      throw SaplingRpcException(
+        'PIVX Sapling get_block_range returned malformed block data',
+        e,
+      );
+    }
     for (final block in blocks) {
       if (block.hash.isNotEmpty) {
         blockHashes[block.height] = block.hash;
@@ -952,13 +1278,18 @@ class PIVXSaplingElectrumX {
 
   /// Get Merkle witness for spend proof construction.
   ///
-  /// [commitment] - 32-byte commitment (cmu) as hex.
-  /// [anchorHeight] - Block height of anchor.
+  /// The v1 release contract uses commitment + anchor root. Some simulator and
+  /// development nodes have exposed compatible witness data behind position or
+  /// height-bound parameter shapes, so callers that need compatibility should
+  /// use [getAnchorBoundWitness] instead of calling this low-level method.
   Future<Map<String, dynamic>?> getWitness(
-      String commitment, int anchorHeight) async {
+      Object commitmentOrPosition, Object? anchorOrHeight) async {
+    final params = <Object>[commitmentOrPosition];
+    if (anchorOrHeight != null) {
+      params.add(anchorOrHeight);
+    }
     final result = await _callFirstSupported(
-        methods: const ['blockchain.sapling.get_witness'],
-        params: <Object>[commitment, anchorHeight]);
+        methods: const ['blockchain.sapling.get_witness'], params: params);
     return result as Map<String, dynamic>?;
   }
 
@@ -971,14 +1302,120 @@ class PIVXSaplingElectrumX {
   Future<SaplingWitnessResult> getAnchorBoundWitness({
     required String commitment,
     required BestAnchorResult anchor,
+    int? notePosition,
   }) async {
-    final witnessData = await getWitness(commitment, anchor.height);
-    if (witnessData == null) {
-      throw SaplingRpcException('PIVX Sapling witness response is null');
+    final attempts = <Map<String, Object>>[
+      {
+        'label': 'commitment_anchor',
+        'params': <Object?>[commitment, anchor.anchor],
+        'retries': 1,
+      },
+      {
+        'label': 'commitment_only',
+        'params': <Object?>[commitment, null],
+        'retries': 2,
+      },
+    ];
+
+    final failures = <String>[];
+    for (final attempt in attempts) {
+      final params = attempt['params'] as List<Object?>;
+      final label = attempt['label'] as String;
+      final retries = attempt['retries'] as int;
+      for (var retry = 1; retry <= retries; retry++) {
+        try {
+          final witnessData = await getWitness(params[0]!, params[1]);
+          if (witnessData == null) {
+            throw SaplingRpcException('PIVX Sapling witness response is null');
+          }
+
+          final witness = SaplingWitnessResult.fromJson(
+              Map<String, dynamic>.from(witnessData));
+          if (label == 'commitment_only') {
+            _validateWitnessCommitment(
+              witness: witness,
+              commitment: commitment,
+            );
+          } else {
+            _validateAnchorBoundWitness(
+              witness: witness,
+              commitment: commitment,
+              anchor: anchor,
+            );
+          }
+          final source = label == 'commitment_only'
+              ? SaplingWitnessResult.sourceCommitmentOnlyFallback
+              : SaplingWitnessResult.sourceAnchorBound;
+          printV('[PIVX Sapling] Witness accepted via $source');
+          return witness.withSource(source);
+        } catch (e) {
+          final reason = _witnessFailureReason(e);
+          failures.add('$label:$reason');
+          printV(
+              '[PIVX Sapling] Witness attempt $label $retry/$retries failed: $reason');
+        }
+      }
     }
 
-    final witness =
-        SaplingWitnessResult.fromJson(Map<String, dynamic>.from(witnessData));
+    throw SaplingRpcException(
+      'PIVX Sapling witness lookup failed for selected note position; attempts=${failures.join(',')}',
+    );
+  }
+
+  static String _witnessFailureReason(Object error) {
+    final text = error.toString().toLowerCase();
+
+    if (text.contains('canonical_witness_unavailable') ||
+        text.contains('witness not found') ||
+        text.contains('commitment not found')) {
+      return 'canonical_witness_unavailable';
+    }
+    if (text.contains('response is null')) {
+      return 'null_response';
+    }
+    if (text.contains('no path')) {
+      return 'missing_path';
+    }
+    if (text.contains('invalid path') ||
+        text.contains('non-canonical node')) {
+      return 'invalid_path';
+    }
+    if (text.contains('no anchor')) {
+      return 'missing_anchor';
+    }
+    if (text.contains('anchor does not match')) {
+      return 'anchor_mismatch';
+    }
+    if (text.contains('height does not match')) {
+      return 'anchor_height_mismatch';
+    }
+    if (text.contains('no commitment')) {
+      return 'missing_commitment';
+    }
+    if (text.contains('commitment does not match')) {
+      return 'commitment_mismatch';
+    }
+    if (text.contains('no note position')) {
+      return 'missing_position';
+    }
+    if (text.contains('rpc method unavailable') ||
+        text.contains('unknown method') ||
+        text.contains('method not found')) {
+      return 'witness_method_unavailable';
+    }
+    if (text.contains('internal server error') ||
+        text.contains('server error')) {
+      return 'server_error';
+    }
+
+    return 'witness_lookup_failed';
+  }
+
+  void _validateAnchorBoundWitness({
+    required SaplingWitnessResult witness,
+    required String commitment,
+    required BestAnchorResult anchor,
+  }) {
     if (witness.anchor.toLowerCase() != anchor.anchor.toLowerCase()) {
       throw SaplingRpcException(
           'PIVX Sapling witness anchor does not match selected anchor');
@@ -987,12 +1424,17 @@ class PIVXSaplingElectrumX {
       throw SaplingRpcException(
           'PIVX Sapling witness height does not match selected anchor height');
     }
+    _validateWitnessCommitment(witness: witness, commitment: commitment);
+  }
+
+  void _validateWitnessCommitment({
+    required SaplingWitnessResult witness,
+    required String commitment,
+  }) {
     if (witness.commitment.toLowerCase() != commitment.toLowerCase()) {
       throw SaplingRpcException(
           'PIVX Sapling witness commitment does not match requested note');
     }
-
-    return witness;
   }
 
   /// Get Sapling data for a specific transaction.
@@ -1019,8 +1461,11 @@ class PIVXSaplingElectrumX {
     int batchSize = 100,
     int parallelBatches = 5,
     required Future<void> Function(List<SaplingBlock> blocks) onBatch,
-    Future<void> Function(int rangeEnd, Map<int, String> blockHashes)?
-        onRangeComplete,
+    Future<void> Function(
+      int rangeStart,
+      int rangeEnd,
+      Map<int, String> blockHashes,
+    )? onRangeComplete,
   }) async {
     // Server enforces max 100 blocks per request
     final effectiveBatchSize = batchSize.clamp(1, 100);
@@ -1050,7 +1495,11 @@ class PIVXSaplingElectrumX {
         if (result.blocks.isNotEmpty) {
           await onBatch(result.blocks);
         }
-        await onRangeComplete?.call(result.endHeight, result.blockHashes);
+        await onRangeComplete?.call(
+          result.startHeight,
+          result.endHeight,
+          result.blockHashes,
+        );
       }
 
       currentStart += parallelBatches * effectiveBatchSize;
@@ -1063,7 +1512,7 @@ class PIVXSaplingElectrumX {
     for (int attempt = 0; attempt <= retries; attempt++) {
       try {
         final result = await getBlockRangeResult(start, endHeight: end);
-        return _BatchResult(result.blocks, end, result.blockHashes);
+        return _BatchResult(result.blocks, start, end, result.blockHashes);
       } catch (e) {
         if (attempt == retries) {
           throw SaplingRpcException(

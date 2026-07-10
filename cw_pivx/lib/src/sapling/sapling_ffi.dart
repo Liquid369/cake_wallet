@@ -20,6 +20,11 @@ class FFIBuffer extends Struct {
 
 /// Load the native PIVX Sapling library.
 DynamicLibrary _loadLibrary() {
+  final overridePath = Platform.environment['PIVX_SAPLING_LIBRARY_PATH'];
+  if (overridePath != null && overridePath.isNotEmpty) {
+    return DynamicLibrary.open(overridePath);
+  }
+
   if (Platform.isAndroid) {
     return DynamicLibrary.open('libcw_pivx_sapling.so');
   } else if (Platform.isIOS) {
@@ -35,13 +40,34 @@ DynamicLibrary _loadLibrary() {
       return DynamicLibrary.process();
     }
   } else if (Platform.isMacOS) {
-    return DynamicLibrary.open('libcw_pivx_sapling.dylib');
+    return _openFirstAvailableLibraryPath(const [
+      'libcw_pivx_sapling.dylib',
+      'cw_pivx/macos/Frameworks/libcw_pivx_sapling.dylib',
+      '../cw_pivx/macos/Frameworks/libcw_pivx_sapling.dylib',
+      'macos/Frameworks/libcw_pivx_sapling.dylib',
+    ]);
   } else if (Platform.isLinux) {
     return DynamicLibrary.open('libcw_pivx_sapling.so');
   } else if (Platform.isWindows) {
     return DynamicLibrary.open('cw_pivx_sapling.dll');
   }
   throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
+}
+
+DynamicLibrary _openFirstAvailableLibraryPath(List<String> paths) {
+  Object? lastError;
+  for (final path in paths) {
+    try {
+      return DynamicLibrary.open(path);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw StateError(
+    'Unable to load native PIVX Sapling library from ${paths.join(', ')}'
+    '${lastError == null ? '' : ': $lastError'}',
+  );
 }
 
 /// Native library instance.
@@ -94,6 +120,27 @@ void _ensureLoaded() {
 
 String _nativeUnavailableMessage() =>
     'Native library not available: ${_nativeLibError ?? 'unknown load error'}';
+
+/// Overwrite a native byte buffer before freeing it.
+///
+/// This is used for short-lived FFI copies of key material such as BIP39 seed
+/// bytes. It is best-effort memory hygiene; it does not make broader platform
+/// guarantees about allocator copies, paging, crash dumps, or Rust-owned data.
+void zeroNativeUint8Buffer(Pointer<Uint8> pointer, int length) {
+  if (pointer == nullptr || length <= 0) return;
+
+  pointer.asTypedList(length).fillRange(0, length, 0);
+}
+
+/// Overwrite a native UTF-8 string allocation before freeing it.
+///
+/// The [value] is used to recover the allocation length created by
+/// `toNativeUtf8()`, including the trailing NUL terminator.
+void zeroNativeUtf8String(Pointer<Utf8> pointer, String? value) {
+  if (pointer == nullptr || value == null) return;
+
+  zeroNativeUint8Buffer(pointer.cast<Uint8>(), utf8.encode(value).length + 1);
+}
 
 // ============================================================================
 // FFI Function Typedefs
@@ -249,6 +296,27 @@ typedef _BuildShieldedTxDart = FFIBuffer Function(
   Pointer<Utf8> anchorHex,
 );
 
+typedef _BuildShieldTxC = FFIBuffer Function(
+  Int64 keyHandle,
+  Pointer<Utf8> utxosJson,
+  Pointer<Utf8> toAddress,
+  Uint64 amount,
+  Pointer<Utf8> memo,
+  Uint64 fee,
+  Pointer<Utf8> changeAddress,
+  Uint64 change,
+);
+typedef _BuildShieldTxDart = FFIBuffer Function(
+  int keyHandle,
+  Pointer<Utf8> utxosJson,
+  Pointer<Utf8> toAddress,
+  int amount,
+  Pointer<Utf8> memo,
+  int fee,
+  Pointer<Utf8> changeAddress,
+  int change,
+);
+
 // ============================================================================
 // FFI Function Bindings
 // ============================================================================
@@ -344,6 +412,9 @@ late final _createTransaction =
 late final _buildShieldedTx =
     _nativeLib.lookupFunction<_BuildShieldedTxC, _BuildShieldedTxDart>(
         'cw_pivx_build_shielded_tx');
+late final _buildShieldTx =
+    _nativeLib.lookupFunction<_BuildShieldTxC, _BuildShieldTxDart>(
+        'cw_pivx_build_shield_tx');
 
 late final _hasProvingParams =
     _nativeLib.lookupFunction<_HasProvingParamsC, _HasProvingParamsDart>(
@@ -474,6 +545,7 @@ bool validateAddress(String address, {bool isTestnet = false}) {
   try {
     return _validateAddress(addressPtr, isTestnet ? 1 : 0) == 1;
   } finally {
+    zeroNativeUtf8String(addressPtr, address);
     malloc.free(addressPtr);
   }
 }
@@ -499,6 +571,7 @@ bool hasProvingParams(String path) {
   try {
     return _hasProvingParams(pathPtr) == 1;
   } finally {
+    zeroNativeUtf8String(pathPtr, path);
     malloc.free(pathPtr);
   }
 }
@@ -518,6 +591,7 @@ bool initProver(String paramsDir) {
   try {
     return _initProver(dirPtr) == 0;
   } finally {
+    zeroNativeUtf8String(dirPtr, paramsDir);
     malloc.free(dirPtr);
   }
 }
@@ -578,6 +652,7 @@ bool restoreNote({
   try {
     return _restoreNote(keyHandle, syncHandle, jsonPtr) == 1;
   } finally {
+    zeroNativeUtf8String(jsonPtr, jsonStr);
     malloc.free(jsonPtr);
   }
 }
@@ -635,12 +710,82 @@ Map<String, dynamic> buildShieldedTransaction({
       (const JsonDecoder().convert(resultStr)) as Map,
     );
   } finally {
+    zeroNativeUtf8String(notesPtr, notesJson);
     malloc.free(notesPtr);
+    zeroNativeUtf8String(toPtr, toAddress);
     malloc.free(toPtr);
     if (memoPtr != nullptr) {
+      zeroNativeUtf8String(memoPtr, memo);
       malloc.free(memoPtr);
     }
+    zeroNativeUtf8String(anchorPtr, anchorHex);
     malloc.free(anchorPtr);
+  }
+}
+
+/// Build a transparent-to-shielded (t-to-z, shield) transaction.
+///
+/// [utxosJson] - JSON array of UTXO objects with txid, vout, value,
+/// script_pubkey (hex) and private_key (32-byte hex).
+/// [toAddress] - Destination Sapling address (ps1...).
+/// [changeAddress]/[change] - Optional transparent change output.
+///
+/// Amounts must balance exactly: sum(utxos) = amount + change + fee.
+Map<String, dynamic> buildShieldTransaction({
+  required int keyHandle,
+  required String utxosJson,
+  required String toAddress,
+  required int amount,
+  String? memo,
+  required int fee,
+  String? changeAddress,
+  int change = 0,
+}) {
+  _ensureLoaded();
+  if (!_nativeLibLoaded) {
+    throw Exception('Native library not available: $_nativeLibError');
+  }
+
+  final utxosPtr = utxosJson.toNativeUtf8();
+  final toPtr = toAddress.toNativeUtf8();
+  final memoPtr = memo?.toNativeUtf8() ?? nullptr;
+  final changePtr = changeAddress?.toNativeUtf8() ?? nullptr;
+
+  try {
+    final buffer = _buildShieldTx(
+      keyHandle,
+      utxosPtr,
+      toPtr,
+      amount,
+      memoPtr,
+      fee,
+      changePtr,
+      change,
+    );
+
+    if (buffer.data == nullptr || buffer.len == 0) {
+      throw Exception(getLastError() ?? 'Failed to build shield transaction');
+    }
+
+    final resultStr = buffer.data.cast<Utf8>().toDartString(length: buffer.len);
+    _freeBuffer(buffer);
+
+    return Map<String, dynamic>.from(
+      (const JsonDecoder().convert(resultStr)) as Map,
+    );
+  } finally {
+    zeroNativeUtf8String(utxosPtr, utxosJson);
+    malloc.free(utxosPtr);
+    zeroNativeUtf8String(toPtr, toAddress);
+    malloc.free(toPtr);
+    if (memoPtr != nullptr) {
+      zeroNativeUtf8String(memoPtr, memo);
+      malloc.free(memoPtr);
+    }
+    if (changePtr != nullptr) {
+      zeroNativeUtf8String(changePtr, changeAddress);
+      malloc.free(changePtr);
+    }
   }
 }
 
@@ -671,6 +816,7 @@ class SaplingKeys {
 
       return SaplingKeys._(handle);
     } finally {
+      zeroNativeUint8Buffer(seedPtr, seed.length);
       malloc.free(seedPtr);
     }
   }
@@ -840,6 +986,9 @@ class SaplingSyncEngine {
 
       return result;
     } finally {
+      zeroNativeUint8Buffer(cmuPtr, 32);
+      zeroNativeUint8Buffer(epkPtr, 32);
+      zeroNativeUint8Buffer(encPtr, 580);
       malloc.free(cmuPtr);
       malloc.free(epkPtr);
       malloc.free(encPtr);
@@ -860,6 +1009,7 @@ class SaplingSyncEngine {
       nullifierPtr.asTypedList(32).setAll(0, nullifier);
       return _checkNullifier(_handle, nullifierPtr) == 1;
     } finally {
+      zeroNativeUint8Buffer(nullifierPtr, 32);
       malloc.free(nullifierPtr);
     }
   }
@@ -923,10 +1073,13 @@ Uint8List createTransaction({
 
     return result;
   } finally {
+    zeroNativeUtf8String(toPtr, toAddress);
     malloc.free(toPtr);
     if (memoPtr != nullptr) {
+      zeroNativeUtf8String(memoPtr, memo);
       malloc.free(memoPtr);
     }
+    zeroNativeUtf8String(pathPtr, provingParamsPath);
     malloc.free(pathPtr);
   }
 }

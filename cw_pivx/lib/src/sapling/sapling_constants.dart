@@ -148,7 +148,10 @@ abstract class PivxFeePolicy {
   static int feeForSize(int size, {int feePerKb = minRelayFeePerKb}) {
     if (size <= 0) return minRelayFeePerKb;
     final fee = (feePerKb * size + 999) ~/ 1000;
-    return fee < minRelayFeePerKb ? minRelayFeePerKb : fee;
+    if (feePerKb == minRelayFeePerKb && fee < minRelayFeePerKb) {
+      return minRelayFeePerKb;
+    }
+    return fee;
   }
 
   static int transparentTxSize(int inputsCount, int outputsCount) =>

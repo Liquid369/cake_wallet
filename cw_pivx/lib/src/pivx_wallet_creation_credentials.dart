@@ -15,7 +15,7 @@ class PivxNewWalletCredentials extends WalletCredentials {
           password: password,
           passphrase: passphrase,
         );
-        
+
   final String? mnemonic;
 }
 
@@ -27,11 +27,13 @@ class PivxRestoreWalletFromSeedCredentials extends WalletCredentials {
     required this.mnemonic,
     WalletInfo? walletInfo,
     String? passphrase,
+    int? height,
   }) : super(
           name: name,
           password: password,
           walletInfo: walletInfo,
           passphrase: passphrase,
+          height: height,
         );
 
   final String mnemonic;
