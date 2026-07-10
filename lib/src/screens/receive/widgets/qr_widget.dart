@@ -10,6 +10,7 @@ import 'package:cake_wallet/src/widgets/bottom_sheet/base_bottom_sheet_widget.da
 import 'package:cake_wallet/src/widgets/bottom_sheet/info_bottom_sheet_widget.dart';
 import 'package:cake_wallet/utils/address_formatter.dart';
 import 'package:cake_wallet/utils/brightness_util.dart';
+import 'package:cake_wallet/utils/clipboard_util.dart';
 import 'package:cake_wallet/utils/responsive_layout_util.dart';
 import 'package:cake_wallet/utils/show_bar.dart';
 import 'package:cake_wallet/utils/show_pop_up.dart';
@@ -49,8 +50,9 @@ class QRWidget extends StatelessWidget {
     );
 
     // This magic number for wider screen sets the text input focus at center of the inputfield
-    final _width =
-        responsiveLayoutUtil.shouldRenderMobileUI ? MediaQuery.of(context).size.width : 500;
+    final _width = responsiveLayoutUtil.shouldRenderMobileUI
+        ? MediaQuery.of(context).size.width
+        : 500;
 
     return Center(
       child: SingleChildScrollView(
@@ -75,7 +77,8 @@ class QRWidget extends StatelessWidget {
                                   context,
                                   Routes.fullscreenQR,
                                   arguments: QrViewData(
-                                    embeddedImagePath: addressListViewModel.qrImage,
+                                    embeddedImagePath:
+                                        addressListViewModel.qrImage,
                                     data: addressUri.toString(),
                                     heroTag: heroTag,
                                   ),
@@ -90,7 +93,8 @@ class QRWidget extends StatelessWidget {
                                 padding: EdgeInsets.zero,
                                 decoration: BoxDecoration(
                                   border: Border(top: BorderSide.none),
-                                  borderRadius: BorderRadius.all(Radius.circular(5)),
+                                  borderRadius:
+                                      BorderRadius.all(Radius.circular(5)),
                                   color: Theme.of(context).colorScheme.surface,
                                 ),
                                 child: Column(
@@ -100,19 +104,25 @@ class QRWidget extends StatelessWidget {
                                       child: AspectRatio(
                                         aspectRatio: 1.0,
                                         child: QrImage(
-                                          embeddedImagePath: addressListViewModel.qrImage,
+                                          embeddedImagePath:
+                                              addressListViewModel.qrImage,
                                           data: addressUri.toString(),
                                           size: 230,
                                         ),
                                       ),
                                     ),
-                                    if (addressListViewModel.isPayjoinUnavailable &&
-                                        !addressListViewModel.isSilentPayments &&
-                                        !addressListViewModel.isBitcoinViewOnly) ...[
+                                    if (addressListViewModel
+                                            .isPayjoinUnavailable &&
+                                        !addressListViewModel
+                                            .isSilentPayments &&
+                                        !addressListViewModel
+                                            .isBitcoinViewOnly) ...[
                                       GestureDetector(
-                                        onTap: () => _onPayjoinInactivePressed(context),
+                                        onTap: () =>
+                                            _onPayjoinInactivePressed(context),
                                         child: Row(
-                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.center,
                                           children: [
                                             Padding(
                                               padding: EdgeInsets.only(
@@ -127,13 +137,15 @@ class QRWidget extends StatelessWidget {
                                             ),
                                             Text(
                                               S.of(context).payjoin_unavailable,
-                                              style:
-                                                  Theme.of(context).textTheme.bodySmall?.copyWith(
-                                                        fontWeight: FontWeight.w600,
-                                                        color: Theme.of(context)
-                                                            .colorScheme
-                                                            .onSurfaceVariant,
-                                                      ),
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall
+                                                  ?.copyWith(
+                                                    fontWeight: FontWeight.w600,
+                                                    color: Theme.of(context)
+                                                        .colorScheme
+                                                        .onSurfaceVariant,
+                                                  ),
                                             ),
                                             Padding(
                                               padding: EdgeInsets.only(
@@ -155,10 +167,13 @@ class QRWidget extends StatelessWidget {
                                         ),
                                       ),
                                     ],
-                                    if (addressListViewModel.payjoinEndpoint.isNotEmpty &&
-                                        !addressListViewModel.isSilentPayments) ...[
+                                    if (addressListViewModel
+                                            .payjoinEndpoint.isNotEmpty &&
+                                        !addressListViewModel
+                                            .isSilentPayments) ...[
                                       Row(
-                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
                                         children: [
                                           Padding(
                                             padding: EdgeInsets.only(
@@ -173,7 +188,10 @@ class QRWidget extends StatelessWidget {
                                           ),
                                           Text(
                                             S.of(context).payjoin_enabled,
-                                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall
+                                                ?.copyWith(
                                                   fontWeight: FontWeight.w600,
                                                 ),
                                           ),
@@ -203,11 +221,12 @@ class QRWidget extends StatelessWidget {
                               hasUnderlineBorder: true,
                               borderWidth: 0.0,
                               selectedCurrency: _currencyName,
-                              selectedCurrencyDecimals:
-                                  addressListViewModel.selectedCurrency.decimals,
+                              selectedCurrencyDecimals: addressListViewModel
+                                  .selectedCurrency.decimals,
                               amountFocusNode: amountTextFieldFocusNode,
                               amountController: amountController,
-                              padding: EdgeInsets.only(top: 20, left: _width / 4),
+                              padding:
+                                  EdgeInsets.only(top: 20, left: _width / 4),
                               isAmountEditable: true,
                               tag: addressListViewModel.selectedCurrency.tag,
                               onTapPicker: () => _presentPicker(context),
@@ -217,14 +236,15 @@ class QRWidget extends StatelessWidget {
                         ),
                       ],
                     )),
-            Divider(height: 1, color: Theme.of(context).colorScheme.outlineVariant),
+            Divider(
+                height: 1, color: Theme.of(context).colorScheme.outlineVariant),
             Padding(
               padding: EdgeInsets.only(top: 12, bottom: 8),
               child: Builder(
                 builder: (context) => Observer(
                   builder: (context) => GestureDetector(
-                    onTap: () {
-                      Clipboard.setData(ClipboardData(text: addressUri.address));
+                    onTap: () async {
+                      await _copyReceiveData(addressUri.address);
                       showBar<void>(context, S.of(context).copied_to_clipboard);
                     },
                     child: Row(
@@ -236,10 +256,14 @@ class QRWidget extends StatelessWidget {
                             address: addressUri.address,
                             walletType: addressListViewModel.type,
                             textAlign: TextAlign.center,
-                            evenTextStyle: Theme.of(context).textTheme.bodyMedium!.copyWith(
+                            evenTextStyle: Theme.of(context)
+                                .textTheme
+                                .bodyMedium!
+                                .copyWith(
                                   fontSize: 15,
                                   fontWeight: FontWeight.w500,
-                                  color: Theme.of(context).colorScheme.onSurface,
+                                  color:
+                                      Theme.of(context).colorScheme.onSurface,
                                 ),
                           ),
                         ),
@@ -255,13 +279,35 @@ class QRWidget extends StatelessWidget {
             ),
             Observer(
               builder: (_) => Offstage(
+                offstage: !addressListViewModel.isPivxShieldedReceiveAddress,
+                child: Padding(
+                  padding: EdgeInsets.only(top: 12),
+                  child: PrimaryImageButton(
+                    onPressed: () async {
+                      await _copyReceiveData(addressUri.toString());
+                      showBar<void>(context, S.of(context).copied_to_clipboard);
+                    },
+                    image: Image.asset(
+                      'assets/images/copy_address.png',
+                      width: 25,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+                    text: S.of(context).copy_payment_uri,
+                    color: Theme.of(context).colorScheme.surfaceContainer,
+                    textColor: Theme.of(context).colorScheme.onSurface,
+                  ),
+                ),
+              ),
+            ),
+            Observer(
+              builder: (_) => Offstage(
                 offstage: addressListViewModel.payjoinEndpoint.isEmpty ||
                     addressListViewModel.isSilentPayments,
                 child: Padding(
                   padding: EdgeInsets.only(top: 12),
                   child: PrimaryImageButton(
-                    onPressed: () {
-                      Clipboard.setData(ClipboardData(text: addressUri.toString()));
+                    onPressed: () async {
+                      await _copyReceiveData(addressUri.toString());
                       showBar<void>(context, S.of(context).copied_to_clipboard);
                     },
                     image: Image.asset(
@@ -283,9 +329,22 @@ class QRWidget extends StatelessWidget {
 
   String get _currencyName {
     if (addressListViewModel.selectedCurrency is CryptoCurrency) {
-      return (addressListViewModel.selectedCurrency as CryptoCurrency).title.toUpperCase();
+      return (addressListViewModel.selectedCurrency as CryptoCurrency)
+          .title
+          .toUpperCase();
     }
     return addressListViewModel.selectedCurrency.name.toUpperCase();
+  }
+
+  Future<void> _copyReceiveData(String text) async {
+    final clipboardData = ClipboardData(text: text);
+
+    if (addressListViewModel.isPivxShieldedReceiveAddress) {
+      await ClipboardUtil.setSensitiveDataToClipboard(clipboardData);
+      return;
+    }
+
+    await Clipboard.setData(clipboardData);
   }
 
   void _presentPicker(BuildContext context) async {

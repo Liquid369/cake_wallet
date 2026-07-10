@@ -4,6 +4,7 @@ import 'package:cake_wallet/store/settings_store.dart';
 import 'package:cake_wallet/themes/core/material_base_theme.dart';
 import 'package:cake_wallet/themes/core/theme_store.dart';
 import 'package:cake_wallet/utils/route_aware.dart';
+import 'package:cake_wallet/utils/secure_screen.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:cake_wallet/di.dart';
@@ -18,7 +19,8 @@ abstract class BasePage extends StatelessWidget {
   final GlobalKey<ScaffoldState> _scaffoldKey;
 
   final Image closeButtonImage = Image.asset('assets/images/close_button.png');
-  final Image closeButtonImageDarkTheme = Image.asset('assets/images/close_button_dark_theme.png');
+  final Image closeButtonImageDarkTheme =
+      Image.asset('assets/images/close_button_dark_theme.png');
 
   String? get title => null;
 
@@ -33,6 +35,8 @@ abstract class BasePage extends StatelessWidget {
   bool get resizeToAvoidBottomInset => true;
 
   bool get extendBodyBehindAppBar => false;
+
+  bool get forceSecureScreen => false;
 
   Widget? get endDrawer => null;
 
@@ -56,9 +60,12 @@ abstract class BasePage extends StatelessWidget {
 
   Color pageBackgroundColor(BuildContext context) =>
       (currentTheme.isDark ? backgroundDarkColor : backgroundLightColor) ??
-      (gradientBackground ? Colors.transparent : Theme.of(context).colorScheme.surface);
+      (gradientBackground
+          ? Colors.transparent
+          : Theme.of(context).colorScheme.surface);
 
-  Color titleColor(BuildContext context) => Theme.of(context).colorScheme.onSurface;
+  Color titleColor(BuildContext context) =>
+      Theme.of(context).colorScheme.onSurface;
 
   Color? pageIconColor(BuildContext context) => titleColor(context);
 
@@ -92,7 +99,8 @@ abstract class BasePage extends StatelessWidget {
             child: TextButton(
               style: TextButton.styleFrom(
                 foregroundColor: Theme.of(context).colorScheme.onSurface,
-                overlayColor: WidgetStateColor.resolveWith((states) => Colors.transparent),
+                overlayColor: WidgetStateColor.resolveWith(
+                    (states) => Colors.transparent),
               ),
               onPressed: () => onClose(context),
               child: backButton(context),
@@ -160,15 +168,6 @@ abstract class BasePage extends StatelessWidget {
           elevation: 0,
           centerTitle: true,
         );
-
-      default:
-        // FIX-ME: NavBar no context
-        return NavBar(
-            // context: context,
-            leading: leading(context),
-            middle: middle(context),
-            trailing: trailing(context),
-            backgroundColor: appBarColor);
     }
   }
 
@@ -218,6 +217,40 @@ abstract class BasePage extends StatelessWidget {
       popNextWidget: (context) => popNextWidget?.call(context),
     );
 
-    return rootWrapper?.call(context, root) ?? root;
+    final page = rootWrapper?.call(context, root) ?? root;
+
+    if (!forceSecureScreen) {
+      return page;
+    }
+
+    return _SecureScreenScope(child: page);
   }
+}
+
+class _SecureScreenScope extends StatefulWidget {
+  const _SecureScreenScope({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_SecureScreenScope> createState() => _SecureScreenScopeState();
+}
+
+class _SecureScreenScopeState extends State<_SecureScreenScope> {
+  @override
+  void initState() {
+    super.initState();
+    SecureScreenNativeScope.enter();
+  }
+
+  @override
+  void dispose() {
+    SecureScreenNativeScope.exit(
+      restoreTo: getIt.get<SettingsStore>().isAppSecure,
+    );
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }

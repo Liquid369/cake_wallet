@@ -16,7 +16,11 @@ class WalletSeedPage extends BasePage {
   WalletSeedPage(this.walletSeedViewModel, {required this.isNewWalletCreated});
 
   @override
-  String get title => '${walletSeedViewModel.walletType} ${S.current.seed_title}';
+  String get title =>
+      '${walletSeedViewModel.walletType} ${S.current.seed_title}';
+
+  @override
+  bool get forceSecureScreen => true;
 
   final bool isNewWalletCreated;
   final WalletSeedViewModel walletSeedViewModel;
@@ -68,12 +72,17 @@ class WalletSeedPage extends BasePage {
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: <Widget>[
                         SizedBox(height: 16),
-                        WarningBox(content: S.current.cake_seeds_save_disclaimer),
+                        WarningBox(
+                            content: S.current.cake_seeds_save_disclaimer),
                         SizedBox(height: 36),
                         Text(
-                          key: ValueKey('wallet_seed_page_wallet_name_text_key'),
+                          key:
+                              ValueKey('wallet_seed_page_wallet_name_text_key'),
                           walletSeedViewModel.name,
-                          style: Theme.of(context).textTheme.bodyMedium!.copyWith(
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodyMedium!
+                              .copyWith(
                                 fontSize: 18,
                                 fontWeight: FontWeight.w600,
                                 color: Theme.of(context).colorScheme.onSurface,
@@ -102,7 +111,8 @@ class WalletSeedPage extends BasePage {
                         child: Container(
                           padding: EdgeInsets.only(right: 8.0, top: 8.0),
                           child: PrimaryButton(
-                            key: ValueKey('wallet_seed_page_save_seeds_button_key'),
+                            key: ValueKey(
+                                'wallet_seed_page_save_seeds_button_key'),
                             onPressed: () {
                               ShareUtil.share(
                                 text: walletSeedViewModel.seed,
@@ -110,8 +120,11 @@ class WalletSeedPage extends BasePage {
                               );
                             },
                             text: S.of(context).save,
-                            color: Theme.of(context).colorScheme.surfaceContainer,
-                            textColor: Theme.of(context).colorScheme.onSecondaryContainer,
+                            color:
+                                Theme.of(context).colorScheme.surfaceContainer,
+                            textColor: Theme.of(context)
+                                .colorScheme
+                                .onSecondaryContainer,
                           ),
                         ),
                       ),
@@ -119,9 +132,10 @@ class WalletSeedPage extends BasePage {
                         child: Container(
                           padding: EdgeInsets.only(left: 8.0, top: 8.0),
                           child: PrimaryButton(
-                            key: ValueKey('wallet_seed_page_verify_seed_button_key'),
-                            onPressed: () =>
-                                Navigator.pushNamed(context, Routes.walletSeedVerificationPage),
+                            key: ValueKey(
+                                'wallet_seed_page_verify_seed_button_key'),
+                            onPressed: () => Navigator.pushNamed(
+                                context, Routes.walletSeedVerificationPage),
                             text: S.current.verify_seed,
                             color: Theme.of(context).colorScheme.primary,
                             textColor: Theme.of(context).colorScheme.onPrimary,
