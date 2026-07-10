@@ -11,11 +11,13 @@ use std::ffi::{c_char, CStr, CString};
 use std::ptr;
 use std::slice;
 use std::sync::Mutex;
+use zeroize::Zeroize;
 
 use sapling::{
     keys::PreparedIncomingViewingKey,
     note::ExtractedNoteCommitment,
     note_encryption::{try_sapling_note_decryption, SaplingDomain, Zip212Enforcement},
+    Node,
 };
 use zcash_note_encryption::{EphemeralKeyBytes, ShieldedOutput, ENC_CIPHERTEXT_SIZE};
 
@@ -234,11 +236,41 @@ pub extern "C" fn cw_pivx_version() -> *mut c_char {
         .into_raw()
 }
 
+/// Overwrite FFI-owned memory before returning it to the allocator.
+pub(crate) unsafe fn zero_ffi_allocation(ptr: *mut u8, len: usize) {
+    if ptr.is_null() || len == 0 {
+        return;
+    }
+
+    for offset in 0..len {
+        ptr.add(offset).write_volatile(0);
+    }
+}
+
+/// Copy a Rust-owned string into an FFI buffer, then zero the Rust staging copy.
+fn ffi_buffer_from_string(mut value: String) -> Option<FFIBuffer> {
+    let len = value.len();
+    let data = unsafe {
+        let ptr = libc::malloc(len) as *mut u8;
+        if ptr.is_null() {
+            value.zeroize();
+            return None;
+        }
+        ptr::copy_nonoverlapping(value.as_ptr(), ptr, len);
+        ptr
+    };
+
+    value.zeroize();
+    Some(FFIBuffer { data, len })
+}
+
 /// Free a string allocated by this library.
 #[no_mangle]
 pub extern "C" fn cw_pivx_free_string(ptr: *mut c_char) {
     if !ptr.is_null() {
         unsafe {
+            let len = CStr::from_ptr(ptr).to_bytes_with_nul().len();
+            zero_ffi_allocation(ptr.cast::<u8>(), len);
             let _ = CString::from_raw(ptr);
         }
     }
@@ -262,7 +294,8 @@ pub struct FFIBuffer {
 pub extern "C" fn cw_pivx_free_buffer(buffer: FFIBuffer) {
     if !buffer.data.is_null() && buffer.len > 0 {
         unsafe {
-            let _ = Vec::from_raw_parts(buffer.data, buffer.len, buffer.len);
+            zero_ffi_allocation(buffer.data, buffer.len);
+            libc::free(buffer.data.cast::<libc::c_void>());
         }
     }
 }
@@ -1143,6 +1176,215 @@ pub extern "C" fn cw_pivx_create_transaction(
 ///
 /// # Returns
 /// FFIBuffer containing JSON with txid and tx_hex, or empty on error
+/// Build a transparent-to-shielded (t-to-z, shield) transaction.
+///
+/// `utxos_json` is an array of objects with `txid` (display hex), `vout`,
+/// `value`, `script_pubkey` (hex, P2PKH) and `private_key` (32-byte hex).
+/// `change` of zero means no transparent change output; otherwise
+/// `change_address` receives it. Amounts must balance exactly:
+/// sum(utxos) = amount + change + fee.
+#[no_mangle]
+pub extern "C" fn cw_pivx_build_shield_tx(
+    key_handle: i64,
+    utxos_json: *const c_char,
+    to_address: *const c_char,
+    amount: u64,
+    memo: *const c_char,
+    fee: u64,
+    change_address: *const c_char,
+    change: u64,
+) -> FFIBuffer {
+    let empty_result = FFIBuffer {
+        data: ptr::null_mut(),
+        len: 0,
+    };
+
+    if utxos_json.is_null() || to_address.is_null() {
+        set_error("Null parameter provided");
+        return empty_result;
+    }
+    if let Err(e) = validate_shielded_amount(amount, "amount") {
+        set_error(&e);
+        return empty_result;
+    }
+    if let Err(e) = validate_fee(fee) {
+        set_error(&e);
+        return empty_result;
+    }
+    if !crate::prover::is_prover_initialized() {
+        set_error("Prover not initialized. Call cw_pivx_init_prover first.");
+        return empty_result;
+    }
+
+    let utxos_str = unsafe {
+        match CStr::from_ptr(utxos_json).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                set_error("Invalid UTXO JSON encoding");
+                return empty_result;
+            }
+        }
+    };
+    let to_str = unsafe {
+        match CStr::from_ptr(to_address).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                set_error("Invalid address encoding");
+                return empty_result;
+            }
+        }
+    };
+    let memo_str = if memo.is_null() {
+        None
+    } else {
+        unsafe {
+            match CStr::from_ptr(memo).to_str() {
+                Ok(s) if !s.is_empty() => Some(s.to_string()),
+                _ => None,
+            }
+        }
+    };
+    if let Err(e) = validate_memo(memo_str.as_deref()) {
+        set_error(&e);
+        return empty_result;
+    }
+    if let Err(e) = validate_string_length(utxos_str, 1_000_000, "utxos_json") {
+        set_error(&e);
+        return empty_result;
+    }
+    if let Err(e) = validate_string_length(to_str, 1000, "to_address") {
+        set_error(&e);
+        return empty_result;
+    }
+
+    let managers = lock_or_fail!(KEY_MANAGERS, empty_result);
+    let key_manager = match managers.get(key_handle as usize).and_then(|m| m.as_ref()) {
+        Some(m) => m,
+        None => {
+            set_error("Invalid key handle");
+            return empty_result;
+        }
+    };
+    let testnet = key_manager.network() == crate::types::Network::Testnet;
+
+    // The shield destination must be a Sapling payment address.
+    let recipient = match key_manager.decode_payment_address(to_str) {
+        Ok(addr) => addr,
+        Err(e) => {
+            set_error(&format!("Invalid shield destination address: {}", e));
+            return empty_result;
+        }
+    };
+
+    // Parse and validate the UTXO inputs and their signing keys.
+    let utxos_data: Vec<crate::types::TransparentUtxoData> =
+        match serde_json::from_str(utxos_str) {
+            Ok(u) => u,
+            Err(e) => {
+                set_error(&format!("Failed to parse UTXO JSON: {}", e));
+                return empty_result;
+            }
+        };
+    if utxos_data.is_empty() {
+        set_error("No UTXOs provided");
+        return empty_result;
+    }
+    let mut inputs = Vec::with_capacity(utxos_data.len());
+    for (idx, utxo) in utxos_data.iter().enumerate() {
+        match crate::transaction::TransparentInput::from_parts(
+            &utxo.txid,
+            utxo.vout,
+            utxo.value,
+            &utxo.script_pubkey,
+            &utxo.private_key,
+        ) {
+            Ok(input) => inputs.push(input),
+            Err(e) => {
+                set_error(&format!("Invalid UTXO {}: {}", idx, e));
+                return empty_result;
+            }
+        }
+    }
+
+    // Optional transparent change.
+    let transparent_change = if change == 0 {
+        None
+    } else {
+        let change_str = if change_address.is_null() {
+            None
+        } else {
+            unsafe { CStr::from_ptr(change_address).to_str().ok() }
+        };
+        let change_str = match change_str {
+            Some(s) if !s.is_empty() => s,
+            _ => {
+                set_error("Change amount requires a change address");
+                return empty_result;
+            }
+        };
+        match crate::transaction::TransparentOutput::to_address(change_str, change, testnet) {
+            Ok(output) => Some(output),
+            Err(e) => {
+                set_error(&format!("Invalid change address: {}", e));
+                return empty_result;
+            }
+        }
+    };
+
+    let memo_bytes: Option<[u8; 512]> = memo_str.as_ref().map(|m| {
+        let mut bytes = [0u8; 512];
+        let m_bytes = m.as_bytes();
+        let len = m_bytes.len().min(512);
+        bytes[..len].copy_from_slice(&m_bytes[..len]);
+        bytes
+    });
+    let outputs = vec![(recipient, amount, memo_bytes)];
+
+    let tx_builder = crate::transaction::TransactionBuilder::new(
+        key_manager.extended_spending_key().clone(),
+        key_manager.diversifiable_full_viewing_key().clone(),
+        testnet,
+    );
+
+    match tx_builder.build_shield_transaction(inputs, outputs, transparent_change, fee) {
+        Ok(built_tx) => {
+            let mut txid_hex = hex::encode(built_tx.txid);
+            let mut tx_hex = hex::encode(&built_tx.raw_tx);
+            let result_str = format!(
+                r#"{{"status":"success","txid":"{}","tx_hex":"{}","fee":{}}}"#,
+                txid_hex, tx_hex, built_tx.fee
+            );
+            let buffer = match ffi_buffer_from_string(result_str) {
+                Some(buffer) => buffer,
+                None => {
+                    txid_hex.zeroize();
+                    tx_hex.zeroize();
+                    set_error("Memory allocation failed");
+                    return empty_result;
+                }
+            };
+            txid_hex.zeroize();
+            tx_hex.zeroize();
+            buffer
+        }
+        Err(e) => {
+            let error_json = serde_json::to_string(&format!("{}", e))
+                .unwrap_or_else(|_| "\"shield transaction build failed\"".to_string());
+            let result_str = format!(
+                r#"{{"status":"error","error":{}}}"#,
+                error_json
+            );
+            match ffi_buffer_from_string(result_str) {
+                Some(buffer) => buffer,
+                None => {
+                    set_error(&format!("Shield transaction build failed: {}", e));
+                    empty_result
+                }
+            }
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn cw_pivx_build_shielded_tx(
     key_handle: i64,
@@ -1164,11 +1406,8 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
         return empty_result;
     }
 
-    // Validate amount and fee ranges
-    if let Err(e) = validate_shielded_amount(amount, "amount") {
-        set_error(&e);
-        return empty_result;
-    }
+    // Validate fee range; the amount dust check is destination-dependent
+    // (shielded vs transparent) and happens after address parsing below.
     if let Err(e) = validate_fee(fee) {
         set_error(&e);
         return empty_result;
@@ -1276,14 +1515,41 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
         return empty_result;
     }
 
-    // Parse destination address
-    let recipient = match key_manager.decode_payment_address(to_str) {
-        Ok(addr) => addr,
-        Err(e) => {
-            set_error(&format!("Invalid recipient address: {}", e));
+    // Parse destination address: a Sapling payment address selects the
+    // z-to-z route, a PIVX base58 transparent address selects z-to-t
+    // (deshield) with a transparent vout and shielded change.
+    let testnet = key_manager.network() == crate::types::Network::Testnet;
+    let mut shielded_recipient = None;
+    let mut transparent_script = None;
+    match key_manager.decode_payment_address(to_str) {
+        Ok(addr) => shielded_recipient = Some(addr),
+        Err(shielded_error) => {
+            match crate::transaction::script_pubkey_for_transparent_address(to_str, testnet) {
+                Ok(script) => transparent_script = Some(script),
+                Err(_) => {
+                    set_error(&format!("Invalid recipient address: {}", shielded_error));
+                    return empty_result;
+                }
+            }
+        }
+    }
+
+    if transparent_script.is_some() {
+        if amount < crate::transaction::TRANSPARENT_DUST_THRESHOLD {
+            set_error(&format!(
+                "amount is below transparent dust threshold ({} zatoshis)",
+                crate::transaction::TRANSPARENT_DUST_THRESHOLD
+            ));
             return empty_result;
         }
-    };
+        if memo_str.is_some() {
+            set_error("Memo is not supported for transparent destinations");
+            return empty_result;
+        }
+    } else if let Err(e) = validate_shielded_amount(amount, "amount") {
+        set_error(&e);
+        return empty_result;
+    }
 
     // Parse anchor
     let anchor_bytes: [u8; 32] = match hex::decode(anchor_str) {
@@ -1324,6 +1590,47 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
             }
         };
 
+        if let Some(expected_cmu) = note_data.cmu.as_ref() {
+            let expected_cmu_bytes: [u8; 32] = match hex::decode(expected_cmu) {
+                Ok(bytes) if bytes.len() == 32 => bytes
+                    .try_into()
+                    .expect("Length checked: cmu is exactly 32 bytes"),
+                _ => {
+                    set_error(&format!("Invalid cmu for note {}", idx));
+                    return empty_result;
+                }
+            };
+            let actual_cmu = note.cmu().to_bytes();
+            if actual_cmu != expected_cmu_bytes {
+                set_error(&format!(
+                    "Reconstructed note commitment mismatch for note {}",
+                    idx
+                ));
+                return empty_result;
+            }
+        }
+
+        let position = note_data.witness_position;
+
+        // Parse merkle path from witness before proving so we can verify the
+        // witness is actually anchored to the selected root.
+        let path = match crate::notes::parse_merkle_path(&note_data.witness, position) {
+            Ok(p) => p,
+            Err(e) => {
+                set_error(&format!("Failed to parse witness for note {}: {}", idx, e));
+                return empty_result;
+            }
+        };
+
+        let witness_root = sapling::Anchor::from(path.root(Node::from_cmu(&note.cmu())));
+        if witness_root.to_bytes() != anchor.to_bytes() {
+            set_error(&format!(
+                "Witness root mismatch for note {}: witness root does not match spend anchor",
+                idx
+            ));
+            return empty_result;
+        }
+
         // Parse the nullifier
         let nullifier_bytes: [u8; 32] = match hex::decode(&note_data.nullifier) {
             Ok(bytes) if bytes.len() == 32 => bytes
@@ -1336,8 +1643,20 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
         };
         let nullifier = sapling::Nullifier(nullifier_bytes);
 
+        let expected_nullifier = note.nf(
+            &key_manager
+                .diversifiable_full_viewing_key()
+                .fvk()
+                .vk
+                .nk,
+            position,
+        );
+        if expected_nullifier.0 != nullifier.0 {
+            set_error(&format!("Nullifier mismatch for note {}", idx));
+            return empty_result;
+        }
+
         // Create SpendableNote with position from witness data
-        let position = note_data.witness_position;
         let spendable = crate::notes::SpendableNote::new(
             note, address, position, // Use witness_position from ElectrumX response
             nullifier, 0, // height - not critical for spending
@@ -1346,16 +1665,6 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
         );
         spendable_notes.push(spendable);
 
-        // Parse merkle path from witness
-        // The witness field contains the path elements (32-byte hashes concatenated)
-        // Position is now passed separately from the witness_position field
-        let path = match crate::notes::parse_merkle_path(&note_data.witness, position) {
-            Ok(p) => p,
-            Err(e) => {
-                set_error(&format!("Failed to parse witness for note {}: {}", idx, e));
-                return empty_result;
-            }
-        };
         merkle_paths.push(path);
     }
 
@@ -1368,73 +1677,87 @@ pub extern "C" fn cw_pivx_build_shielded_tx(
         bytes
     });
 
-    // Build the outputs list
-    let outputs = vec![(recipient, amount, memo_bytes)];
+    // Build the route-specific output lists
+    let (outputs, transparent_outputs) = match (shielded_recipient, transparent_script) {
+        (Some(recipient), _) => (vec![(recipient, amount, memo_bytes)], Vec::new()),
+        (None, Some(script_pubkey)) => (
+            Vec::new(),
+            vec![crate::transaction::TransparentOutput {
+                value: amount,
+                script_pubkey,
+            }],
+        ),
+        (None, None) => {
+            set_error("Invalid recipient address");
+            return empty_result;
+        }
+    };
 
     // Create transaction builder
     let tx_builder = crate::transaction::TransactionBuilder::new(
         key_manager.extended_spending_key().clone(),
         key_manager.diversifiable_full_viewing_key().clone(),
-        key_manager.network() == crate::types::Network::Testnet,
+        testnet,
     );
 
     // Build the transaction
-    match tx_builder.build_transaction(spendable_notes, merkle_paths, anchor, outputs, fee) {
+    match tx_builder.build_route_transaction(
+        spendable_notes,
+        merkle_paths,
+        anchor,
+        outputs,
+        transparent_outputs,
+        fee,
+    ) {
         Ok(built_tx) => {
-            // Success! Return the transaction
-            let result = serde_json::json!({
-                "status": "success",
-                "txid": hex::encode(built_tx.txid),
-                "tx_hex": hex::encode(&built_tx.raw_tx),
-                "fee": built_tx.fee,
-            });
+            let mut txid_hex = hex::encode(built_tx.txid);
+            let mut tx_hex = hex::encode(&built_tx.raw_tx);
+            let result_str = format!(
+                r#"{{"status":"success","txid":"{}","tx_hex":"{}","fee":{}}}"#,
+                txid_hex, tx_hex, built_tx.fee
+            );
 
-            let result_str = result.to_string();
-            let result_bytes = result_str.as_bytes();
-
-            let data = unsafe {
-                let ptr = libc::malloc(result_bytes.len()) as *mut u8;
-                if ptr.is_null() {
+            let buffer = match ffi_buffer_from_string(result_str) {
+                Some(buffer) => buffer,
+                None => {
+                    txid_hex.zeroize();
+                    tx_hex.zeroize();
                     set_error("Memory allocation failed");
                     return empty_result;
                 }
-                ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, result_bytes.len());
-                ptr
             };
 
-            FFIBuffer {
-                data,
-                len: result_bytes.len(),
-            }
+            txid_hex.zeroize();
+            tx_hex.zeroize();
+            buffer
         }
         Err(e) => {
             // Return error details as JSON so caller can understand what happened
-            let result = serde_json::json!({
-                "status": "error",
-                "error": format!("{}", e),
-                "notes_count": notes_data.len(),
-                "total_input": total_input,
-                "amount": amount,
-                "fee": fee,
-            });
+            let mut error_message = format!("{}", e);
+            let mut error_json = serde_json::to_string(&error_message)
+                .unwrap_or_else(|_| "\"transaction build failed\"".to_string());
+            let result_str = format!(
+                r#"{{"status":"error","error":{},"notes_count":{},"total_input":{},"amount":{},"fee":{}}}"#,
+                error_json,
+                notes_data.len(),
+                total_input,
+                amount,
+                fee
+            );
 
-            let result_str = result.to_string();
-            let result_bytes = result_str.as_bytes();
-
-            let data = unsafe {
-                let ptr = libc::malloc(result_bytes.len()) as *mut u8;
-                if ptr.is_null() {
+            let buffer = match ffi_buffer_from_string(result_str) {
+                Some(buffer) => buffer,
+                None => {
                     set_error(&format!("Transaction build failed: {}", e));
+                    error_message.zeroize();
+                    error_json.zeroize();
                     return empty_result;
                 }
-                ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, result_bytes.len());
-                ptr
             };
 
-            FFIBuffer {
-                data,
-                len: result_bytes.len(),
-            }
+            error_message.zeroize();
+            error_json.zeroize();
+            buffer
         }
     }
 } // ============================================================================
@@ -1481,6 +1804,29 @@ pub extern "C" fn pivx_sapling_get_sync_height(session_id: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_zero_ffi_allocation_overwrites_bytes() {
+        let mut bytes = vec![1u8, 2, 3, 4];
+
+        unsafe {
+            zero_ffi_allocation(bytes.as_mut_ptr(), bytes.len());
+        }
+
+        assert_eq!(bytes, vec![0u8; 4]);
+    }
+
+    #[test]
+    fn test_ffi_buffer_from_string_copies_bytes() {
+        let buffer = ffi_buffer_from_string("ffi-json".to_string()).unwrap();
+        assert!(!buffer.data.is_null());
+        assert_eq!(buffer.len, 8);
+
+        let bytes = unsafe { slice::from_raw_parts(buffer.data, buffer.len) };
+        assert_eq!(bytes, b"ffi-json");
+
+        cw_pivx_free_buffer(buffer);
+    }
 
     #[test]
     fn test_ffi_init_keys() {

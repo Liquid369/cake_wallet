@@ -22,7 +22,7 @@ pub mod transaction;
 pub mod types;
 pub mod utils;
 
-use std::ffi::{c_char, c_uchar, CString};
+use std::ffi::{c_char, c_uchar, CStr, CString};
 use std::ptr;
 
 pub use error::*;
@@ -66,6 +66,8 @@ pub extern "C" fn pivx_sapling_version() -> *mut c_char {
 #[no_mangle]
 pub unsafe extern "C" fn pivx_free_string(s: *mut c_char) {
     if !s.is_null() {
+        let len = CStr::from_ptr(s).to_bytes_with_nul().len();
+        crate::ffi::zero_ffi_allocation(s.cast::<u8>(), len);
         drop(CString::from_raw(s));
     }
 }
@@ -77,6 +79,7 @@ pub unsafe extern "C" fn pivx_free_string(s: *mut c_char) {
 #[no_mangle]
 pub unsafe extern "C" fn pivx_free_buffer(ptr: *mut c_uchar, len: usize) {
     if !ptr.is_null() && len > 0 {
+        crate::ffi::zero_ffi_allocation(ptr.cast::<u8>(), len);
         drop(Vec::from_raw_parts(ptr, len, len));
     }
 }

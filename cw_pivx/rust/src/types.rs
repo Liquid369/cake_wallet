@@ -1,6 +1,7 @@
 //! Common types used across the library.
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 /// Network type for PIVX
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +92,29 @@ pub struct SpendableNoteData {
     pub memo: Option<String>,
 }
 
+impl SpendableNoteData {
+    fn zeroize_sensitive_fields(&mut self) {
+        self.diversifier.zeroize();
+        self.pk_d.zeroize();
+        self.rcm.zeroize();
+        self.rseed.zeroize();
+        self.witness.zeroize();
+        self.nullifier.zeroize();
+        if let Some(cmu) = self.cmu.as_mut() {
+            cmu.zeroize();
+        }
+        if let Some(memo) = self.memo.as_mut() {
+            memo.zeroize();
+        }
+    }
+}
+
+impl Drop for SpendableNoteData {
+    fn drop(&mut self) {
+        self.zeroize_sensitive_fields();
+    }
+}
+
 /// Result of creating a transaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionResult {
@@ -102,6 +126,23 @@ pub struct TransactionResult {
     pub nullifiers: Vec<String>,
     /// Transaction fee in zatoshis
     pub fee: u64,
+}
+
+impl TransactionResult {
+    fn zeroize_sensitive_fields(&mut self) {
+        self.txid.zeroize();
+        self.tx_hex.zeroize();
+        for nullifier in &mut self.nullifiers {
+            nullifier.zeroize();
+        }
+        self.nullifiers.clear();
+    }
+}
+
+impl Drop for TransactionResult {
+    fn drop(&mut self) {
+        self.zeroize_sensitive_fields();
+    }
 }
 
 /// Transparent UTXO for shielding transactions.
@@ -119,6 +160,20 @@ pub struct TransparentUtxoData {
     pub private_key: String,
 }
 
+impl TransparentUtxoData {
+    fn zeroize_sensitive_fields(&mut self) {
+        self.txid.zeroize();
+        self.script_pubkey.zeroize();
+        self.private_key.zeroize();
+    }
+}
+
+impl Drop for TransparentUtxoData {
+    fn drop(&mut self) {
+        self.zeroize_sensitive_fields();
+    }
+}
+
 /// Options for creating a transaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionOptions {
@@ -134,6 +189,24 @@ pub struct TransactionOptions {
     pub block_height: u32,
 }
 
+impl TransactionOptions {
+    fn zeroize_sensitive_fields(&mut self) {
+        self.to_address.zeroize();
+        if let Some(memo) = self.memo.as_mut() {
+            memo.zeroize();
+        }
+        if let Some(change_address) = self.change_address.as_mut() {
+            change_address.zeroize();
+        }
+    }
+}
+
+impl Drop for TransactionOptions {
+    fn drop(&mut self) {
+        self.zeroize_sensitive_fields();
+    }
+}
+
 /// Sync status information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncStatus {
@@ -147,4 +220,93 @@ pub struct SyncStatus {
     pub is_syncing: bool,
     /// Error message if any
     pub error: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spendable_note_data_zeroizes_sensitive_strings() {
+        let mut note = SpendableNoteData {
+            diversifier: "0102030405060708090a0b".to_string(),
+            pk_d: "11".repeat(32),
+            value: 42,
+            rcm: "22".repeat(32),
+            rseed: "33".repeat(32),
+            witness: "44".repeat(1024),
+            witness_position: 7,
+            nullifier: "55".repeat(32),
+            cmu: Some("66".repeat(32)),
+            memo: Some("sensitive memo".to_string()),
+        };
+
+        note.zeroize_sensitive_fields();
+
+        assert!(note.diversifier.is_empty());
+        assert!(note.pk_d.is_empty());
+        assert_eq!(note.value, 42);
+        assert!(note.rcm.is_empty());
+        assert!(note.rseed.is_empty());
+        assert!(note.witness.is_empty());
+        assert_eq!(note.witness_position, 7);
+        assert!(note.nullifier.is_empty());
+        assert_eq!(note.cmu.as_deref(), Some(""));
+        assert_eq!(note.memo.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn transaction_result_zeroizes_sensitive_strings() {
+        let mut result = TransactionResult {
+            txid: "aa".repeat(32),
+            tx_hex: "bb".repeat(1200),
+            nullifiers: vec!["cc".repeat(32), "dd".repeat(32)],
+            fee: 10000,
+        };
+
+        result.zeroize_sensitive_fields();
+
+        assert!(result.txid.is_empty());
+        assert!(result.tx_hex.is_empty());
+        assert!(result.nullifiers.is_empty());
+        assert_eq!(result.fee, 10000);
+    }
+
+    #[test]
+    fn transparent_utxo_data_zeroizes_sensitive_strings() {
+        let mut utxo = TransparentUtxoData {
+            txid: "aa".repeat(32),
+            vout: 1,
+            value: 12345,
+            script_pubkey: "76a914".to_string(),
+            private_key: "secret-wif".to_string(),
+        };
+
+        utxo.zeroize_sensitive_fields();
+
+        assert!(utxo.txid.is_empty());
+        assert_eq!(utxo.vout, 1);
+        assert_eq!(utxo.value, 12345);
+        assert!(utxo.script_pubkey.is_empty());
+        assert!(utxo.private_key.is_empty());
+    }
+
+    #[test]
+    fn transaction_options_zeroizes_sensitive_strings() {
+        let mut options = TransactionOptions {
+            to_address: "ps1recipient".to_string(),
+            amount: 42,
+            memo: Some("memo".to_string()),
+            change_address: Some("ps1change".to_string()),
+            block_height: 123,
+        };
+
+        options.zeroize_sensitive_fields();
+
+        assert!(options.to_address.is_empty());
+        assert_eq!(options.amount, 42);
+        assert_eq!(options.memo.as_deref(), Some(""));
+        assert_eq!(options.change_address.as_deref(), Some(""));
+        assert_eq!(options.block_height, 123);
+    }
 }
