@@ -977,7 +977,7 @@ abstract class TransactionDetailsViewModelBase with Store {
     final requiredConfirmations =
         tx.additionalInfo['pivxRequiredConfirmations'] as int? ?? 6;
     final confirmationState = isShielded
-        ? _pivxShieldedConfirmationState(tx, requiredConfirmations)
+        ? pivxShieldedConfirmationState(tx, requiredConfirmations)
         : null;
 
     final _items = [
@@ -1001,13 +1001,13 @@ abstract class TransactionDetailsViewModelBase with Store {
       if (pool != null)
         StandartListItem(
           title: 'Pool',
-          value: _formatPivxPool(pool),
+          value: formatPivxPool(pool),
           key: ValueKey('standard_list_item_pivx_pool_key'),
         ),
       if (route != null)
         StandartListItem(
           title: 'Route',
-          value: _formatPivxRoute(route),
+          value: formatPivxRoute(route),
           key: ValueKey('standard_list_item_pivx_route_key'),
         ),
       if (confirmationState != null)
@@ -1046,7 +1046,8 @@ abstract class TransactionDetailsViewModelBase with Store {
     items.addAll(_items);
   }
 
-  String _pivxShieldedConfirmationState(
+  @visibleForTesting
+  static String pivxShieldedConfirmationState(
     TransactionInfo tx,
     int requiredConfirmations,
   ) {
@@ -1068,7 +1069,8 @@ abstract class TransactionDetailsViewModelBase with Store {
         : 'Confirmed shielded send';
   }
 
-  String _formatPivxPool(String pool) {
+  @visibleForTesting
+  static String formatPivxPool(String pool) {
     switch (pool) {
       case 'shielded':
         return 'Shielded';
@@ -1079,7 +1081,8 @@ abstract class TransactionDetailsViewModelBase with Store {
     }
   }
 
-  String _formatPivxRoute(String route) {
+  @visibleForTesting
+  static String formatPivxRoute(String route) {
     switch (route) {
       case 'z-receive':
         return 'Shielded receive';

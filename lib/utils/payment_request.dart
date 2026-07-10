@@ -3,7 +3,11 @@ import 'package:cake_wallet/nano/nano.dart';
 
 class PaymentRequest {
   PaymentRequest(this.address, this.amount, this.note, this.scheme, this.pjUri,
-      {this.callbackUrl, this.callbackMessage, this.contractAddress});
+      {this.callbackUrl,
+      this.callbackMessage,
+      this.contractAddress,
+      List<String> unsupportedParameters = const []})
+      : unsupportedParameters = List.unmodifiable(unsupportedParameters);
 
   factory PaymentRequest.fromUri(Uri? uri) {
     var address = "";
@@ -15,6 +19,7 @@ class PaymentRequest {
     String? callbackMessage;
     String? pjUri;
     String? contractAddress;
+    final unsupportedParameters = <String>[];
 
     if (uri != null) {
       if (uri.queryParameters['pj'] != null) {
@@ -22,8 +27,12 @@ class PaymentRequest {
       }
 
       address = uri.queryParameters['address'] ?? uri.path;
-      amount = uri.queryParameters['tx_amount'] ?? uri.queryParameters['amount'] ?? "";
-      note = uri.queryParameters['tx_description'] ?? uri.queryParameters['message'] ?? "";
+      amount = uri.queryParameters['tx_amount'] ??
+          uri.queryParameters['amount'] ??
+          "";
+      note = uri.queryParameters['tx_description'] ??
+          uri.queryParameters['message'] ??
+          "";
       scheme = uri.scheme;
       callbackUrl = uri.queryParameters['callback'];
       callbackMessage = uri.queryParameters['callbackMessage'];
@@ -36,6 +45,14 @@ class PaymentRequest {
         amount = paymentUri.amount;
         contractAddress = paymentUri.contractAddress;
       }
+
+      if (scheme == "pivx") {
+        for (final key in uri.queryParameters.keys) {
+          if (key == 'memo' || key == 'req-memo' || key.startsWith('req-')) {
+            unsupportedParameters.add(key);
+          }
+        }
+      }
     }
 
     if (scheme == "nano-gpt") {
@@ -46,9 +63,11 @@ class PaymentRequest {
       if (amount.isNotEmpty) {
         if (!_isAlreadyUsableAmount(amount)) {
           if (address.contains("nano")) {
-            amount = nanoUtil!.getRawAsUsableString(amount, nanoUtil!.rawPerNano);
+            amount =
+                nanoUtil!.getRawAsUsableString(amount, nanoUtil!.rawPerNano);
           } else if (address.contains("ban")) {
-            amount = nanoUtil!.getRawAsUsableString(amount, nanoUtil!.rawPerBanano);
+            amount =
+                nanoUtil!.getRawAsUsableString(amount, nanoUtil!.rawPerBanano);
           }
         }
       }
@@ -63,6 +82,7 @@ class PaymentRequest {
       callbackUrl: callbackUrl,
       callbackMessage: callbackMessage,
       contractAddress: contractAddress,
+      unsupportedParameters: unsupportedParameters,
     );
   }
 
@@ -74,6 +94,9 @@ class PaymentRequest {
   final String? callbackUrl;
   final String? callbackMessage;
   final String? contractAddress;
+  final List<String> unsupportedParameters;
+
+  bool get hasUnsupportedParameters => unsupportedParameters.isNotEmpty;
 
   /// Checks if the amount string is already in a usable format (e.g., "123.45") and doesn't need to be converted from raw format.
   ///

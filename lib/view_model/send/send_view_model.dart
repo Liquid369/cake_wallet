@@ -68,6 +68,16 @@ part 'send_view_model.g.dart';
 
 class SendViewModel = SendViewModelBase with _$SendViewModel;
 
+enum PivxSendRouteStatus {
+  incomplete,
+  transparentToTransparent,
+  shieldedToShielded,
+  shieldedToTransparent,
+  transparentToShielded,
+  mixedOutputsUnsupported,
+  ambiguousShieldedSource,
+}
+
 abstract class SendViewModelBase extends WalletChangeListenerViewModel
     with Store {
   @override
@@ -187,6 +197,76 @@ abstract class SendViewModelBase extends WalletChangeListenerViewModel
       wallet.type == WalletType.pivx &&
       coinTypeToSpendFrom == UnspentCoinType.sapling;
 
+  String? get pivxUnsupportedRouteMessage {
+    if (wallet.type != WalletType.pivx) return null;
+
+    final destinationAddresses = outputs
+        .map((output) =>
+            output.isParsedAddress ? output.extractedAddress : output.address)
+        .toList(growable: false);
+    final routeStatus = pivxSendRouteStatusFor(
+      coinTypeToSpendFrom: coinTypeToSpendFrom,
+      destinationAddresses: destinationAddresses,
+    );
+
+    switch (routeStatus) {
+      case PivxSendRouteStatus.mixedOutputsUnsupported:
+        return 'PIVX cannot send to transparent and shielded recipients in one transaction yet.';
+      case PivxSendRouteStatus.ambiguousShieldedSource:
+        return 'Select a PIVX transparent or shielded source before sending to a shielded address.';
+      case PivxSendRouteStatus.incomplete:
+      case PivxSendRouteStatus.transparentToTransparent:
+      case PivxSendRouteStatus.shieldedToShielded:
+      case PivxSendRouteStatus.shieldedToTransparent:
+      case PivxSendRouteStatus.transparentToShielded:
+        return null;
+    }
+  }
+
+  static PivxSendRouteStatus pivxSendRouteStatusFor({
+    required UnspentCoinType coinTypeToSpendFrom,
+    required Iterable<String> destinationAddresses,
+  }) {
+    final addresses = destinationAddresses
+        .map((address) => address.trim())
+        .where((address) => address.isNotEmpty)
+        .toList(growable: false);
+    if (addresses.isEmpty) {
+      return PivxSendRouteStatus.incomplete;
+    }
+
+    final hasShieldedOutput = addresses.any(_isPivxShieldedAddress);
+    final hasTransparentOutput =
+        addresses.any((address) => !_isPivxShieldedAddress(address));
+    if (hasShieldedOutput && hasTransparentOutput) {
+      return PivxSendRouteStatus.mixedOutputsUnsupported;
+    }
+
+    if (coinTypeToSpendFrom == UnspentCoinType.sapling) {
+      // z-to-t (deshield) is supported: shielded notes pay a transparent
+      // output with shielded change.
+      return hasTransparentOutput
+          ? PivxSendRouteStatus.shieldedToTransparent
+          : PivxSendRouteStatus.shieldedToShielded;
+    }
+
+    if (hasShieldedOutput) {
+      // t-to-z (shield) is supported: transparent UTXOs fund the Sapling
+      // output with transparent change.
+      return coinTypeToSpendFrom == UnspentCoinType.any
+          ? PivxSendRouteStatus.ambiguousShieldedSource
+          : PivxSendRouteStatus.transparentToShielded;
+    }
+
+    return PivxSendRouteStatus.transparentToTransparent;
+  }
+
+  static bool _isPivxShieldedAddress(String address) {
+    final normalized = address.toLowerCase().trim();
+    return normalized.startsWith('ps1') ||
+        normalized.startsWith('ptestsapling1');
+  }
+
   @computed
   bool get isBatchSending => outputs.length > 1;
 
@@ -286,9 +366,28 @@ abstract class SendViewModelBase extends WalletChangeListenerViewModel
     } else if (walletType == WalletType.litecoin &&
         coinTypeToSpendFrom == UnspentCoinType.nonMweb) {
       return balanceViewModel.balances.values.first.availableBalance;
+    } else if (walletType == WalletType.pivx) {
+      final pivxBalance = balanceViewModel.balances[CryptoCurrency.pivx];
+
+      return pivxDisplayedBalanceForSourcePool(
+        coinTypeToSpendFrom: coinTypeToSpendFrom,
+        pivxBalance: pivxBalance,
+      );
     }
     return wallet
         .balance[selectedCryptoCurrency]!.formattedFullAvailableBalance;
+  }
+
+  @visibleForTesting
+  static String pivxDisplayedBalanceForSourcePool({
+    required UnspentCoinType coinTypeToSpendFrom,
+    required BalanceRecord? pivxBalance,
+  }) {
+    if (coinTypeToSpendFrom == UnspentCoinType.sapling) {
+      return pivxBalance?.secondAvailableBalance ?? '0';
+    }
+
+    return pivxBalance?.availableBalance ?? '0';
   }
 
   @action
@@ -304,6 +403,10 @@ abstract class SendViewModelBase extends WalletChangeListenerViewModel
       coinTypeToSpendFrom = UnspentCoinType.any;
     } else if (currentType == UnspentCoinType.mweb) {
       coinTypeToSpendFrom = UnspentCoinType.nonMweb;
+    } else if (currentType == UnspentCoinType.transparent) {
+      coinTypeToSpendFrom = UnspentCoinType.sapling;
+    } else if (currentType == UnspentCoinType.sapling) {
+      coinTypeToSpendFrom = UnspentCoinType.transparent;
     }
 
     // set it back to the original value:

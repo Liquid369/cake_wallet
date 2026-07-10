@@ -224,9 +224,9 @@ abstract class NodeCreateOrEditViewModelBase with Store {
       final isAlive = await node.requestNode();
       if (isAlive && _walletType == WalletType.pivx) {
         final capabilities = await _pivxNodeSaplingCapabilities(node);
-        if (capabilities == null || !capabilities.supportsBlockRange) {
+        if (capabilities == null || !capabilities.supportsV1ReleaseContract) {
           connectionState = FailureState(
-              'PIVX node is reachable, but Sapling RPC capability is unavailable.');
+              'PIVX node is reachable, but it does not advertise the PIVX Sapling ElectrumX v1 release contract.');
           return;
         }
         _applyPivxSaplingMetadata(node, capabilities);
@@ -284,7 +284,7 @@ abstract class NodeCreateOrEditViewModelBase with Store {
     Node node,
     SaplingRpcCapabilities capabilities,
   ) {
-    node.supportsPivxSapling = capabilities.supportsBlockRange;
+    node.supportsPivxSapling = capabilities.supportsV1ReleaseContract;
     node.pivxSaplingContract = capabilities.contract;
     node.pivxSaplingServerVersion = capabilities.serverVersion;
     node.pivxCoreVersion = capabilities.pivxCoreVersion;

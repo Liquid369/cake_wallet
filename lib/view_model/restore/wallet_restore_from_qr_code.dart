@@ -60,9 +60,11 @@ class WalletRestoreFromQRCode {
   };
 
   static WalletType? _extractWalletType(String code) {
-    final sortedKeys = _walletTypeMap.keys.toList()..sort((a, b) => b.length.compareTo(a.length));
+    final sortedKeys = _walletTypeMap.keys.toList()
+      ..sort((a, b) => b.length.compareTo(a.length));
 
-    final extracted = sortedKeys.firstWhereOrNull((key) => code.toLowerCase().contains(key));
+    final extracted =
+        sortedKeys.firstWhereOrNull((key) => code.toLowerCase().contains(key));
 
     if (code.startsWith("xpub")) return WalletType.bitcoin;
     if (code.startsWith("zpub")) return WalletType.bitcoin;
@@ -96,9 +98,11 @@ class WalletRestoreFromQRCode {
     }
   }
 
-  static String? _extractSeedPhraseFromUrl(String rawString, WalletType walletType) {
-    RegExp _getPattern(int wordCount) =>
-        RegExp(r'(?<=\W|^)((?:\w+\s+){' + (wordCount - 1).toString() + r'}\w+)(?=\W|$)');
+  static String? _extractSeedPhraseFromUrl(
+      String rawString, WalletType walletType) {
+    RegExp _getPattern(int wordCount) => RegExp(r'(?<=\W|^)((?:\w+\s+){' +
+        (wordCount - 1).toString() +
+        r'}\w+)(?=\W|$)');
 
     final List<int> patternCounts = [12, 13, 14, 16, 18, 24, 25, 26];
 
@@ -112,35 +116,44 @@ class WalletRestoreFromQRCode {
     return null;
   }
 
-  static Future<RestoredWallet> scanQRCodeForRestoring(BuildContext context) async {
+  static Future<RestoredWallet> scanQRCodeForRestoring(
+      BuildContext context) async {
     String? code = await presentQRScanner(context);
     if (code == null) throw Exception("Unexpected scan QR code value: aborted");
-    if (code.isEmpty) throw Exception('Unexpected scan QR code value: value is empty');
+    if (code.isEmpty)
+      throw Exception('Unexpected scan QR code value: value is empty');
 
     if (code.startsWith("[")) code = code.substring(code.indexOf("]") + 1);
 
     String formattedUri = '';
     WalletType? walletType = _extractWalletType(code);
-    final prefix = code.startsWith('xpub') ? 'xpub' : code.startsWith('zpub') ? 'zpub' : '????';
+    final prefix = code.startsWith('xpub')
+        ? 'xpub'
+        : code.startsWith('zpub')
+            ? 'zpub'
+            : '????';
     if (walletType == null) {
-      await _specifyWalletAssets(context, "Can't determine wallet type, please pick it manually");
+      await _specifyWalletAssets(
+          context, "Can't determine wallet type, please pick it manually");
       walletType =
-          await Navigator.pushNamed(context, Routes.restoreWalletTypeFromQR) as WalletType?;
-      if (walletType == null) throw Exception("Failed to determine wallet type.");
+          await Navigator.pushNamed(context, Routes.restoreWalletTypeFromQR)
+              as WalletType?;
+      if (walletType == null)
+        throw Exception("Failed to determine wallet type.");
 
       final seedPhrase = _extractSeedPhraseFromUrl(code, walletType);
 
       formattedUri = seedPhrase != null
           ? '$walletType:?seed=$seedPhrase'
-          : code.startsWith(prefix) 
-            ? '$walletType:?$prefix=$code' 
-            : throw Exception('Failed to determine valid seed phrase');
+          : code.startsWith(prefix)
+              ? '$walletType:?$prefix=$code'
+              : throw Exception('Failed to determine valid seed phrase');
     } else {
       final index = code.indexOf(':');
       final query = code.substring(index + 1).replaceAll('?', '&');
-      formattedUri = code.startsWith(prefix) 
-        ? '$walletType:?$prefix=$code' 
-        :'$walletType:?$query';
+      formattedUri = code.startsWith(prefix)
+          ? '$walletType:?$prefix=$code'
+          : '$walletType:?$query';
     }
 
     final uri = Uri.parse(formattedUri);
@@ -153,7 +166,11 @@ class WalletRestoreFromQRCode {
       queryParameters['address'] = _extractAddressFromUrl(code, walletType);
     }
 
-    Map<String, dynamic> credentials = {'type': walletType, ...queryParameters, 'raw_qr': code};
+    Map<String, dynamic> credentials = {
+      'type': walletType,
+      ...queryParameters,
+      'raw_qr': code
+    };
 
     credentials['mode'] = _determineWalletRestoreMode(credentials);
 
@@ -169,7 +186,8 @@ class WalletRestoreFromQRCode {
     }
   }
 
-  static WalletRestoreMode _determineWalletRestoreMode(Map<String, dynamic> credentials) {
+  static WalletRestoreMode _determineWalletRestoreMode(
+      Map<String, dynamic> credentials) {
     final type = credentials['type'] as WalletType;
     if (credentials.containsKey('tx_payment_id')) {
       final txIdValue = credentials['tx_payment_id'] as String? ?? '';
@@ -177,8 +195,17 @@ class WalletRestoreFromQRCode {
       throw Exception('Unexpected restore mode: tx_payment_id is invalid');
     }
 
-    if (credentials.containsKey("xpub") ||
-        credentials.containsKey("zpub")) {
+    if (type == WalletType.pivx &&
+        (credentials.containsKey('private_key') ||
+            credentials.containsKey('spend_key') ||
+            credentials.containsKey('view_key') ||
+            credentials.containsKey('xpub') ||
+            credentials.containsKey('zpub'))) {
+      throw UnsupportedError(
+          'PIVX key restore is not supported yet. Restore PIVX wallets from seed phrase and optional restore height.');
+    }
+
+    if (credentials.containsKey("xpub") || credentials.containsKey("zpub")) {
       return WalletRestoreMode.keys;
     }
 
@@ -204,13 +231,15 @@ class WalletRestoreFromQRCode {
       return WalletRestoreMode.seed;
     }
 
-    if (credentials.containsKey('spend_key') || credentials.containsKey('view_key')) {
+    if (credentials.containsKey('spend_key') ||
+        credentials.containsKey('view_key')) {
       final spendKeyValue = credentials['spend_key'] as String? ?? '';
       final viewKeyValue = credentials['view_key'] as String? ?? '';
 
       return spendKeyValue.isNotEmpty || viewKeyValue.isNotEmpty
           ? WalletRestoreMode.keys
-          : throw Exception('Unexpected restore mode: spend_key or view_key is invalid');
+          : throw Exception(
+              'Unexpected restore mode: spend_key or view_key is invalid');
     }
 
     if (isEVMCompatibleChain(type) && credentials.containsKey('private_key')) {
@@ -249,7 +278,8 @@ class WalletRestoreFromQRCode {
     if (type == WalletType.monero) {
       final codeParsed = json.decode(credentials['raw_qr'].toString());
       if (codeParsed["version"] != 0)
-        throw UnimplementedError("Found view-only restore with unsupported version");
+        throw UnimplementedError(
+            "Found view-only restore with unsupported version");
       if (codeParsed["primaryAddress"] == null ||
           codeParsed["privateViewKey"] == null ||
           codeParsed["restoreHeight"] == null) {

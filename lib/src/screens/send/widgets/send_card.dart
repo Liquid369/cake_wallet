@@ -16,6 +16,7 @@ import 'package:cake_wallet/src/screens/exchange/widgets/currency_picker.dart';
 import 'package:cake_wallet/themes/core/material_base_theme.dart';
 import 'package:cake_wallet/utils/payment_request.dart';
 import 'package:cake_wallet/utils/responsive_layout_util.dart';
+import 'package:cake_wallet/utils/show_bar.dart';
 import 'package:cake_wallet/view_model/payment/payment_view_model.dart';
 import 'package:cake_wallet/view_model/wallet_switcher_view_model.dart';
 import 'package:cake_wallet/exchange/trade.dart';
@@ -75,7 +76,8 @@ class SendCard extends StatefulWidget {
       );
 }
 
-class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<SendCard> {
+class SendCardState extends State<SendCard>
+    with AutomaticKeepAliveClientMixin<SendCard> {
   SendCardState({
     required this.output,
     required this.sendViewModel,
@@ -121,12 +123,14 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
 
     /// if the current wallet doesn't match the one in the qr code
     if (initialPaymentRequest != null &&
-        sendViewModel.walletCurrencyName != initialPaymentRequest!.scheme.toLowerCase()) {
+        sendViewModel.walletCurrencyName !=
+            initialPaymentRequest!.scheme.toLowerCase()) {
       WidgetsBinding.instance.addPostFrameCallback(
         (timeStamp) {
           if (mounted) {
-            final prefix =
-                initialPaymentRequest!.scheme.isNotEmpty ? "${initialPaymentRequest!.scheme}:" : "";
+            final prefix = initialPaymentRequest!.scheme.isNotEmpty
+                ? "${initialPaymentRequest!.scheme}:"
+                : "";
             final amount = initialPaymentRequest!.amount.isNotEmpty
                 ? "?amount=${initialPaymentRequest!.amount}"
                 : "";
@@ -149,14 +153,16 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
     super.dispose();
   }
 
-  Future<void> _handlePaymentFlow(String uri, PaymentRequest paymentRequest) async {
+  Future<void> _handlePaymentFlow(
+      String uri, PaymentRequest paymentRequest) async {
     if (uri.contains('@') || paymentRequest.address.contains('@')) return;
 
     try {
       final result = await paymentViewModel.processAddress(uri);
 
       if (paymentRequest.contractAddress != null) {
-        await sendViewModel.fetchTokenForContractAddress(paymentRequest.contractAddress!);
+        await sendViewModel
+            .fetchTokenForContractAddress(paymentRequest.contractAddress!);
       }
 
       switch (result.type) {
@@ -287,8 +293,8 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
 
     if (success) {
       await sendViewModel.wallet.updateBalance();
-      sendViewModel
-          .setSelectedCryptoCurrency(result.addressDetectionResult!.detectedCurrency!.title);
+      sendViewModel.setSelectedCryptoCurrency(
+          result.addressDetectionResult!.detectedCurrency!.title);
       _applyPaymentRequest(paymentRequest);
     }
   }
@@ -322,13 +328,14 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
           }
         });
         await Future.delayed(const Duration(seconds: 2));
-        if (loadingBottomSheetContext != null && loadingBottomSheetContext!.mounted) {
+        if (loadingBottomSheetContext != null &&
+            loadingBottomSheetContext!.mounted) {
           Navigator.of(loadingBottomSheetContext!).pop();
         }
 
         await sendViewModel.wallet.updateBalance();
-        sendViewModel
-            .setSelectedCryptoCurrency(result.addressDetectionResult!.detectedCurrency!.title);
+        sendViewModel.setSelectedCryptoCurrency(
+            result.addressDetectionResult!.detectedCurrency!.title);
         _applyPaymentRequest(paymentRequest);
       }
     }
@@ -339,6 +346,11 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
     if (sendViewModel.usePayjoin) {
       sendViewModel.payjoinUri = paymentRequest.pjUri;
     }
+    if (sendViewModel.walletType == WalletType.pivx &&
+        paymentRequest.hasUnsupportedParameters) {
+      showBar<void>(
+          context, S.of(context).pivx_payment_uri_unsupported_parameters);
+    }
     addressController.text = paymentRequest.address;
     if (paymentRequest.amount.isNotEmpty) {
       cryptoAmountController.text = paymentRequest.amount;
@@ -346,7 +358,8 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
     noteController.text = paymentRequest.note;
   }
 
-  Future<void> _handleSwapFlow(PaymentViewModel paymentViewModel, PaymentFlowResult result) async {
+  Future<void> _handleSwapFlow(
+      PaymentViewModel paymentViewModel, PaymentFlowResult result) async {
     Navigator.of(context).pop();
     final bottomSheet = getIt.get<SwapConfirmationBottomSheet>(param1: result);
     await showModalBottomSheet<Trade?>(
@@ -419,13 +432,16 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                 return AddressTextField(
                   contentPadding: EdgeInsets.symmetric(vertical: 8),
                   hasUnderlineBorder: true,
-                  fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  fillColor:
+                      Theme.of(context).colorScheme.surfaceContainerHighest,
                   addressKey: ValueKey('send_page_address_textfield_key'),
                   focusNode: addressFocusNode,
                   controller: addressController,
                   onURIScanned: (uri) async {
-                    if (OpenCryptoPayService.isOpenCryptoPayQR(uri.toString())) {
-                      sendViewModel.createOpenCryptoPayTransaction(uri.toString());
+                    if (OpenCryptoPayService.isOpenCryptoPayQR(
+                        uri.toString())) {
+                      sendViewModel
+                          .createOpenCryptoPayTransaction(uri.toString());
                     } else {
                       // Process the payment through the new flow
                       await _handlePaymentFlow(
@@ -454,8 +470,9 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                       output.resetParsedAddress();
                       await output.fetchParsedAddress(context);
 
-                      final address =
-                          output.isParsedAddress ? output.extractedAddress : output.address;
+                      final address = output.isParsedAddress
+                          ? output.extractedAddress
+                          : output.address;
 
                       await _handlePaymentFlow(
                         address,
@@ -485,7 +502,8 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                 Padding(
                   padding: const EdgeInsets.only(top: 20),
                   child: BaseTextFormField(
-                    fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    fillColor:
+                        Theme.of(context).colorScheme.surfaceContainerHighest,
                     controller: extractedAddressController,
                     readOnly: true,
                     enableInteractiveSelection: false,
@@ -500,29 +518,34 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
               CurrencyAmountTextField(
                 borderWidth: 0.0,
                 hasUnderlineBorder: true,
-                fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                currencyPickerButtonKey: ValueKey('send_page_currency_picker_button_key'),
+                fillColor:
+                    Theme.of(context).colorScheme.surfaceContainerHighest,
+                currencyPickerButtonKey:
+                    ValueKey('send_page_currency_picker_button_key'),
                 amountTextfieldKey: ValueKey('send_page_amount_textfield_key'),
                 sendAllButtonKey: ValueKey('send_page_send_all_button_key'),
-                currencyAmountTextFieldWidgetKey:
-                    ValueKey('send_page_crypto_currency_amount_textfield_widget_key'),
+                currencyAmountTextFieldWidgetKey: ValueKey(
+                    'send_page_crypto_currency_amount_textfield_widget_key'),
                 selectedCurrency: sendViewModel.selectedCryptoCurrency.title,
-                selectedCurrencyDecimals: sendViewModel.selectedCryptoCurrency.decimals,
+                selectedCurrencyDecimals:
+                    sendViewModel.selectedCryptoCurrency.decimals,
                 amountFocusNode: widget.cryptoAmountFocus,
                 amountController: cryptoAmountController,
                 isAmountEditable: true,
                 onTapPicker: () => _presentPicker(context),
                 isPickerEnable: sendViewModel.hasMultipleTokens,
                 tag: sendViewModel.selectedCryptoCurrency.tag,
-                allAmountButton:
-                    !sendViewModel.isBatchSending && sendViewModel.shouldDisplaySendALL,
+                allAmountButton: !sendViewModel.isBatchSending &&
+                    sendViewModel.shouldDisplaySendALL,
                 currencyValueValidator: output.sendAll
                     ? sendViewModel.allAmountValidator
                     : sendViewModel.amountValidator(output),
                 allAmountCallback: () async =>
                     output.setSendAll(await sendViewModel.sendingBalance),
               ),
-              Divider(height: 1, color: Theme.of(context).colorScheme.outlineVariant),
+              Divider(
+                  height: 1,
+                  color: Theme.of(context).colorScheme.outlineVariant),
               Observer(
                 builder: (_) {
                   // force rebuild on mobx
@@ -536,10 +559,13 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                         Expanded(
                           child: Text(
                             S.of(context).available_balance + ':',
-                            style: Theme.of(context).textTheme.bodySmall!.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                ),
+                            style:
+                                Theme.of(context).textTheme.bodySmall!.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                    ),
                           ),
                         ),
                         FutureBuilder<String>(
@@ -587,10 +613,12 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                 CurrencyAmountTextField(
                   borderWidth: 0.0,
                   hasUnderlineBorder: true,
-                  fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                  amountTextfieldKey: ValueKey('send_page_fiat_amount_textfield_key'),
-                  currencyAmountTextFieldWidgetKey:
-                      ValueKey('send_page_fiat_currency_amount_textfield_widget_key'),
+                  fillColor:
+                      Theme.of(context).colorScheme.surfaceContainerHighest,
+                  amountTextfieldKey:
+                      ValueKey('send_page_fiat_amount_textfield_key'),
+                  currencyAmountTextFieldWidgetKey: ValueKey(
+                      'send_page_fiat_currency_amount_textfield_widget_key'),
                   selectedCurrency: sendViewModel.fiat.title,
                   selectedCurrencyDecimals: sendViewModel.fiat.decimals,
                   amountFocusNode: widget.fiatAmountFocus,
@@ -599,13 +627,16 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                   isAmountEditable: true,
                   allAmountButton: false,
                 ),
-              Divider(height: 1, color: Theme.of(context).colorScheme.outlineVariant),
+              Divider(
+                  height: 1,
+                  color: Theme.of(context).colorScheme.outlineVariant),
               Padding(
                 padding: EdgeInsets.only(top: 20),
                 child: BaseTextFormField(
                   hasUnderlineBorder: true,
                   contentPadding: EdgeInsets.symmetric(vertical: 8),
-                  fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  fillColor:
+                      Theme.of(context).colorScheme.surfaceContainerHighest,
                   key: ValueKey('send_page_note_textfield_key'),
                   controller: noteController,
                   keyboardType: TextInputType.multiline,
@@ -614,7 +645,10 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                         fontWeight: FontWeight.w500,
                       ),
                   hintText: S.of(context).note_optional,
-                  placeholderTextStyle: Theme.of(context).textTheme.bodyMedium!.copyWith(
+                  placeholderTextStyle: Theme.of(context)
+                      .textTheme
+                      .bodyMedium!
+                      .copyWith(
                         fontWeight: FontWeight.w500,
                         color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
@@ -635,9 +669,10 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                         children: <Widget>[
                           Text(
                             S.of(context).send_estimated_fee,
-                            style: Theme.of(context).textTheme.bodySmall!.copyWith(
-                                  fontWeight: FontWeight.w700,
-                                ),
+                            style:
+                                Theme.of(context).textTheme.bodySmall!.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                    ),
                           ),
                           Container(
                             child: Row(
@@ -651,7 +686,10 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                                       output.estimatedFee.toString() +
                                           ' ' +
                                           sendViewModel.currency.toString(),
-                                      style: Theme.of(context).textTheme.bodySmall!.copyWith(
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall!
+                                          .copyWith(
                                             fontWeight: FontWeight.w600,
                                           ),
                                     ),
@@ -663,13 +701,15 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                                               output.estimatedFeeFiatAmount +
                                                   ' ' +
                                                   sendViewModel.fiat.title,
-                                              style:
-                                                  Theme.of(context).textTheme.bodySmall!.copyWith(
-                                                        fontWeight: FontWeight.w600,
-                                                        color: Theme.of(context)
-                                                            .colorScheme
-                                                            .onSurfaceVariant,
-                                                      ),
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall!
+                                                  .copyWith(
+                                                    fontWeight: FontWeight.w600,
+                                                    color: Theme.of(context)
+                                                        .colorScheme
+                                                        .onSurfaceVariant,
+                                                  ),
                                             ),
                                     ),
                                   ],
@@ -679,7 +719,8 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                                   child: Icon(
                                     Icons.arrow_forward_ios,
                                     size: 12,
-                                    color: Theme.of(context).colorScheme.onSurface,
+                                    color:
+                                        Theme.of(context).colorScheme.onSurface,
                                   ),
                                 )
                               ],
@@ -712,9 +753,10 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                         children: [
                           Text(
                             S.of(context).coin_control,
-                            style: Theme.of(context).textTheme.bodySmall!.copyWith(
-                                  fontWeight: FontWeight.w700,
-                                ),
+                            style:
+                                Theme.of(context).textTheme.bodySmall!.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                    ),
                           ),
                           Icon(
                             Icons.arrow_forward_ios,
@@ -726,15 +768,16 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                     ),
                   ),
                 ),
-              if (sendViewModel.currency == CryptoCurrency.ltc && sendViewModel.isMwebEnabled)
+              if (sendViewModel.currency == CryptoCurrency.ltc &&
+                  sendViewModel.isMwebEnabled)
                 Observer(
                   builder: (_) => Padding(
                     padding: EdgeInsets.only(top: 14),
                     child: GestureDetector(
                       key: ValueKey('send_page_unspent_coin_button_key'),
                       onTap: () {
-                        bool value =
-                            widget.sendViewModel.coinTypeToSpendFrom == UnspentCoinType.any;
+                        bool value = widget.sendViewModel.coinTypeToSpendFrom ==
+                            UnspentCoinType.any;
                         sendViewModel.setAllowMwebCoins(!value);
                       },
                       child: Container(
@@ -744,11 +787,14 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                           children: [
                             StandardCheckbox(
                               caption: S.of(context).litecoin_mweb_allow_coins,
-                              captionColor: Theme.of(context).colorScheme.onSurfaceVariant,
-                              borderColor: Theme.of(context).colorScheme.primary,
+                              captionColor: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
+                              borderColor:
+                                  Theme.of(context).colorScheme.primary,
                               iconColor: Theme.of(context).colorScheme.primary,
-                              value:
-                                  widget.sendViewModel.coinTypeToSpendFrom == UnspentCoinType.any,
+                              value: widget.sendViewModel.coinTypeToSpendFrom ==
+                                  UnspentCoinType.any,
                               onChanged: (bool? value) {
                                 sendViewModel.setAllowMwebCoins(value ?? false);
                               },
@@ -767,10 +813,12 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                     child: GestureDetector(
                       key: ValueKey('send_page_pivx_shielded_toggle_key'),
                       onTap: () {
-                        final isShielded = widget.sendViewModel.coinTypeToSpendFrom == UnspentCoinType.sapling;
-                        sendViewModel.setPivxCoinType(
-                          isShielded ? UnspentCoinType.transparent : UnspentCoinType.sapling
-                        );
+                        final isShielded =
+                            widget.sendViewModel.coinTypeToSpendFrom ==
+                                UnspentCoinType.sapling;
+                        sendViewModel.setPivxCoinType(isShielded
+                            ? UnspentCoinType.transparent
+                            : UnspentCoinType.sapling);
                       },
                       child: Container(
                         color: Colors.transparent,
@@ -779,14 +827,18 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                           children: [
                             StandardCheckbox(
                               caption: 'Send from shielded balance',
-                              captionColor: Theme.of(context).colorScheme.onSurfaceVariant,
-                              borderColor: Theme.of(context).colorScheme.primary,
+                              captionColor: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
+                              borderColor:
+                                  Theme.of(context).colorScheme.primary,
                               iconColor: Theme.of(context).colorScheme.primary,
-                              value: widget.sendViewModel.coinTypeToSpendFrom == UnspentCoinType.sapling,
+                              value: widget.sendViewModel.coinTypeToSpendFrom ==
+                                  UnspentCoinType.sapling,
                               onChanged: (bool? value) {
-                                sendViewModel.setPivxCoinType(
-                                  (value ?? false) ? UnspentCoinType.sapling : UnspentCoinType.transparent
-                                );
+                                sendViewModel.setPivxCoinType((value ?? false)
+                                    ? UnspentCoinType.sapling
+                                    : UnspentCoinType.transparent);
                               },
                             ),
                           ],
@@ -794,6 +846,57 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
                       ),
                     ),
                   ),
+                ),
+              if (sendViewModel.currency == CryptoCurrency.pivx)
+                Observer(
+                  builder: (_) {
+                    final routeMessage =
+                        widget.sendViewModel.pivxUnsupportedRouteMessage;
+                    if (routeMessage == null) {
+                      return const SizedBox.shrink();
+                    }
+
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 10),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          color: Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerHighest,
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              Icons.info_outline,
+                              size: 18,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                routeMessage,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                    ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
                 ),
             ],
           ),
@@ -850,7 +953,8 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
       if (all) cryptoAmountController.text = S.current.all;
     });
 
-    reaction((_) => sendViewModel.selectedCryptoCurrency, (Currency currency) async {
+    reaction((_) => sendViewModel.selectedCryptoCurrency,
+        (Currency currency) async {
       if (output.sendAll) {
         output.setSendAll(await sendViewModel.sendingBalance);
       }
@@ -918,7 +1022,8 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
           }
         }
 
-        final parsedAddress = output.isParsedAddress ? output.extractedAddress : output.address;
+        final parsedAddress =
+            output.isParsedAddress ? output.extractedAddress : output.address;
 
         _lastHandledAddress = current;
         await _handlePaymentFlow(
@@ -939,7 +1044,8 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
     });
 
     if (initialPaymentRequest != null &&
-        sendViewModel.walletCurrencyName == initialPaymentRequest!.scheme.toLowerCase()) {
+        sendViewModel.walletCurrencyName ==
+            initialPaymentRequest!.scheme.toLowerCase()) {
       addressController.text = initialPaymentRequest!.address;
       cryptoAmountController.text = initialPaymentRequest!.amount;
       noteController.text = initialPaymentRequest!.note;
@@ -954,14 +1060,19 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
     _effectsInstalled = true;
   }
 
-  Future<void> pickTransactionPriority(BuildContext context, Output output) async {
+  Future<void> pickTransactionPriority(
+      BuildContext context, Output output) async {
     final items = priorityForWalletType(sendViewModel.walletType);
-    final selectedItem = items.indexOf(sendViewModel.feesViewModel.transactionPriority);
-    final customItemIndex = sendViewModel.feesViewModel.getCustomPriorityIndex(items);
+    final selectedItem =
+        items.indexOf(sendViewModel.feesViewModel.transactionPriority);
+    final customItemIndex =
+        sendViewModel.feesViewModel.getCustomPriorityIndex(items);
     final isBitcoinWallet = sendViewModel.walletType == WalletType.bitcoin;
-    final maxCustomFeeRate = sendViewModel.feesViewModel.maxCustomFeeRate?.toDouble();
-    double? customFeeRate =
-        isBitcoinWallet ? sendViewModel.feesViewModel.customBitcoinFeeRate.toDouble() : null;
+    final maxCustomFeeRate =
+        sendViewModel.feesViewModel.maxCustomFeeRate?.toDouble();
+    double? customFeeRate = isBitcoinWallet
+        ? sendViewModel.feesViewModel.customBitcoinFeeRate.toDouble()
+        : null;
 
     FocusManager.instance.primaryFocus?.unfocus();
 
@@ -973,8 +1084,9 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
           builder: (BuildContext context, StateSetter setState) {
             return Picker(
               items: items,
-              displayItem: (TransactionPriority priority) =>
-                  sendViewModel.feesViewModel.displayFeeRate(priority, customFeeRate?.round()),
+              displayItem: (TransactionPriority priority) => sendViewModel
+                  .feesViewModel
+                  .displayFeeRate(priority, customFeeRate?.round()),
               selectedAtIndex: selectedIdx,
               customItemIndex: customItemIndex,
               maxValue: maxCustomFeeRate,
@@ -983,7 +1095,8 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
               closeOnItemSelected: !isBitcoinWallet,
               mainAxisAlignment: MainAxisAlignment.center,
               sliderValue: customFeeRate,
-              onSliderChanged: (double newValue) => setState(() => customFeeRate = newValue),
+              onSliderChanged: (double newValue) =>
+                  setState(() => customFeeRate = newValue),
               onItemSelected: (TransactionPriority priority) async {
                 sendViewModel.feesViewModel.setTransactionPriority(priority);
                 setState(() => selectedIdx = items.indexOf(priority));
@@ -994,7 +1107,8 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
         );
       },
     );
-    if (isBitcoinWallet) sendViewModel.feesViewModel.customBitcoinFeeRate = customFeeRate!.round();
+    if (isBitcoinWallet)
+      sendViewModel.feesViewModel.customBitcoinFeeRate = customFeeRate!.round();
   }
 
   void _presentPicker(BuildContext context) {
@@ -1002,11 +1116,13 @@ class SendCardState extends State<SendCard> with AutomaticKeepAliveClientMixin<S
       context: context,
       builder: (_) => CurrencyPicker(
         key: ValueKey('send_page_currency_picker_dialog_button_key'),
-        selectedAtIndex: sendViewModel.currencies.indexOf(sendViewModel.selectedCryptoCurrency),
+        selectedAtIndex: sendViewModel.currencies
+            .indexOf(sendViewModel.selectedCryptoCurrency),
         items: sendViewModel.currencies,
         hintText: S.of(context).search_currency,
         onItemSelected: (Currency cur) async {
-          final selectedCurrency = sendViewModel.selectedCryptoCurrency = (cur as CryptoCurrency);
+          final selectedCurrency =
+              sendViewModel.selectedCryptoCurrency = (cur as CryptoCurrency);
           await output.calculateEstimatedFee();
           return selectedCurrency;
         },

@@ -26,7 +26,8 @@ abstract class Pivx {
       {required String name,
       required String mnemonic,
       required String password,
-      String? passphrase});
+      String? passphrase,
+      int? height});
 
   TransactionPriority deserializePivxTransactionPriority(int raw);
 

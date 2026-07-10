@@ -29,12 +29,14 @@ class CWPivx extends Pivx {
     required String mnemonic,
     required String password,
     String? passphrase,
+    int? height,
   }) =>
       PivxRestoreWalletFromSeedCredentials(
         name: name,
         mnemonic: mnemonic,
         password: password,
         passphrase: passphrase,
+        height: height,
       );
 
   @override

@@ -132,7 +132,11 @@ class NodeListRow extends StandardListRow {
   }
 
   String get _pivxSaplingStatus {
-    if (node.supportsPivxSapling == true) return 'Sapling ready';
+    if (node.supportsPivxSapling == true) return 'Sapling v1 ready';
+    if (node.pivxSaplingContract ==
+        SaplingRpcCapabilities.legacyBlockRangeContractId) {
+      return 'Sapling legacy only';
+    }
     if (node.supportsPivxSapling == false) return 'Sapling unavailable';
     return 'Sapling not checked';
   }
@@ -169,7 +173,7 @@ class NodeListRow extends StandardListRow {
 
     final capabilities = await _pivxNodeSaplingCapabilities();
     await _savePivxSaplingStatus(capabilities);
-    return capabilities?.supportsBlockRange == true;
+    return capabilities?.supportsV1ReleaseContract == true;
   }
 
   Future<SaplingRpcCapabilities?> _pivxNodeSaplingCapabilities() async {
@@ -204,7 +208,7 @@ class NodeListRow extends StandardListRow {
 
   Future<void> _savePivxSaplingStatus(
       SaplingRpcCapabilities? capabilities) async {
-    node.supportsPivxSapling = capabilities?.supportsBlockRange ?? false;
+    node.supportsPivxSapling = capabilities?.supportsV1ReleaseContract ?? false;
     node.pivxSaplingContract = capabilities?.contract;
     node.pivxSaplingServerVersion = capabilities?.serverVersion;
     node.pivxCoreVersion = capabilities?.pivxCoreVersion;

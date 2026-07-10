@@ -156,7 +156,7 @@ class NodeSwitchingService {
         isTestnet: appStore.wallet?.isTestnet ?? false,
       );
       final capabilities = await saplingClient.probeCapabilities();
-      return capabilities.supportsBlockRange;
+      return capabilities.supportsV1ReleaseContract;
     } catch (_) {
       return false;
     } finally {

@@ -65,6 +65,11 @@ class BalanceRowWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLitecoinMwebBalance = shouldShowLitecoinMwebControls(
+      walletType: dashboardViewModel.type,
+      currency: currency,
+    );
+
     return Column(
       children: [
         Container(
@@ -356,7 +361,7 @@ class BalanceRowWidget extends StatelessWidget {
                     margin: const EdgeInsets.only(top: 10, left: 12, right: 8, bottom: 10),
                     child: Stack(
                       children: [
-                        if (currency == CryptoCurrency.ltc)
+                        if (isLitecoinMwebBalance)
                           Row(
                             mainAxisAlignment: MainAxisAlignment.end,
                             children: [
@@ -468,7 +473,7 @@ class BalanceRowWidget extends StatelessWidget {
                       ],
                     ),
                   ),
-                  IntrinsicHeight(
+                  if (isLitecoinMwebBalance) IntrinsicHeight(
                     child: Container(
                       padding: EdgeInsets.symmetric(horizontal: 12),
                       child: Row(
@@ -595,7 +600,7 @@ class BalanceRowWidget extends StatelessWidget {
                       ),
                     ),
                   ),
-                  SizedBox(height: 16),
+                  if (isLitecoinMwebBalance) SizedBox(height: 16),
                 ],
               ),
             ),
@@ -631,6 +636,14 @@ class BalanceRowWidget extends StatelessWidget {
         backgroundColor: Color.fromRGBO(0, 0, 0, 0.85),
       );
     } catch (_) {}
+  }
+
+  @visibleForTesting
+  static bool shouldShowLitecoinMwebControls({
+    required WalletType walletType,
+    required CryptoCurrency currency,
+  }) {
+    return walletType == WalletType.litecoin && currency == CryptoCurrency.ltc;
   }
 
   Widget _buildSecondBalanceLabel(BuildContext context) {

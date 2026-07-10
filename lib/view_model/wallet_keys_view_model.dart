@@ -21,7 +21,8 @@ class WalletKeysViewModel = WalletKeysViewModelBase with _$WalletKeysViewModel;
 
 abstract class WalletKeysViewModelBase with Store {
   WalletKeysViewModelBase(this._appStore)
-      : title = '${walletTypeToString(_appStore.wallet!.type)} ${S.current.wallet_keys}',
+      : title =
+            '${walletTypeToString(_appStore.wallet!.type)} ${S.current.wallet_keys}',
         _wallet = _appStore.wallet!,
         _walletName = _appStore.wallet!.type.name,
         _restoreHeight = _appStore.wallet!.walletInfo.restoreHeight,
@@ -38,18 +39,22 @@ abstract class WalletKeysViewModelBase with Store {
         _wallet.type == WalletType.wownero) {
       final accountTransactions = _getWalletTransactions(_wallet);
       if (accountTransactions.isNotEmpty) {
-        final incomingAccountTransactions =
-            accountTransactions.where((tx) => tx.direction == TransactionDirection.incoming);
+        final incomingAccountTransactions = accountTransactions
+            .where((tx) => tx.direction == TransactionDirection.incoming);
         if (incomingAccountTransactions.isNotEmpty) {
-          incomingAccountTransactions.toList().sort((a, b) => a.date.compareTo(b.date));
-          _restoreHeightByTransactions =
-              _getRestoreHeightByTransactions(_wallet.type, incomingAccountTransactions.first.date);
+          incomingAccountTransactions
+              .toList()
+              .sort((a, b) => a.date.compareTo(b.date));
+          _restoreHeightByTransactions = _getRestoreHeightByTransactions(
+              _wallet.type, incomingAccountTransactions.first.date);
         }
       }
     }
   }
 
   bool get isBitcoin => _wallet.type == WalletType.bitcoin;
+
+  bool get isPivx => _wallet.type == WalletType.pivx;
 
   final ObservableList<StandartListItem> items;
 
@@ -68,12 +73,15 @@ abstract class WalletKeysViewModelBase with Store {
   bool get isLegacySeedOnly =>
       [WalletType.monero, WalletType.wownero].contains(_wallet.type) &&
       _wallet.seed != null &&
-      !(Polyseed.isValidSeed(_wallet.seed!) || _wallet.seed!.split(' ').length == 12);
+      !(Polyseed.isValidSeed(_wallet.seed!) ||
+          _wallet.seed!.split(' ').length == 12);
 
   String get legacySeed {
-    if ((_wallet.type == WalletType.monero || _wallet.type == WalletType.wownero) &&
+    if ((_wallet.type == WalletType.monero ||
+            _wallet.type == WalletType.wownero) &&
         _wallet.seed != null &&
-        (Polyseed.isValidSeed(_wallet.seed!) || _wallet.seed!.split(' ').length == 12)) {
+        (Polyseed.isValidSeed(_wallet.seed!) ||
+            _wallet.seed!.split(' ').length == 12)) {
       final langName = PolyseedLang.getByPhrase(_wallet.seed!).nameEnglish;
 
       if (_wallet.type == WalletType.monero) {
@@ -105,9 +113,11 @@ abstract class WalletKeysViewModelBase with Store {
   /// The Regex split the words based on any whitespace character.
   ///
   /// Either standard ASCII space (U+0020) or the full-width space character (U+3000) used by the Japanese.
-  List<String> get seedSplit => seed.isNotEmpty ? seed.split(RegExp(r'\s+')) : [];
+  List<String> get seedSplit =>
+      seed.isNotEmpty ? seed.split(RegExp(r'\s+')) : [];
 
-  List<String> get legacySeedSplit => legacySeed.isNotEmpty ? legacySeed.split(RegExp(r'\s+')) : [];
+  List<String> get legacySeedSplit =>
+      legacySeed.isNotEmpty ? legacySeed.split(RegExp(r'\s+')) : [];
 
   void _populateKeysItems() {
     items.clear();
@@ -167,7 +177,6 @@ abstract class WalletKeysViewModelBase with Store {
       case WalletType.litecoin:
       case WalletType.bitcoinCash:
       case WalletType.dogecoin:
-      case WalletType.pivx:
         if (_wallet.type == WalletType.bitcoin) {
           keys = bitcoin!.getSilentPaymentKeys(_appStore.wallet!);
         }
@@ -178,12 +187,19 @@ abstract class WalletKeysViewModelBase with Store {
           if ((electrumKeys['wif'] ?? '').isNotEmpty)
             StandartListItem(title: "WIF", value: electrumKeys['wif']!),
           if ((electrumKeys['privateKey'] ?? '').isNotEmpty)
-            StandartListItem(title: S.current.private_key, value: electrumKeys['privateKey']!),
+            StandartListItem(
+                title: S.current.private_key,
+                value: electrumKeys['privateKey']!),
           if (electrumKeys['publicKey'] != null)
-            StandartListItem(title: S.current.public_key, value: electrumKeys['publicKey']!),
+            StandartListItem(
+                title: S.current.public_key, value: electrumKeys['publicKey']!),
           if (electrumKeys['xpub'] != null)
             StandartListItem(title: "xPub", value: electrumKeys['xpub']!),
         ]);
+        break;
+      case WalletType.pivx:
+        // PIVX recovery is intentionally seed-only until WIF/viewing-key
+        // import/export policy is complete and manually verified.
         break;
       case WalletType.none:
       case WalletType.haven:
@@ -299,8 +315,10 @@ abstract class WalletKeysViewModelBase with Store {
     final restoreHeightResult = await restoreHeight;
     return {
       if (_wallet.seed != null) 'seed': _wallet.seed!,
-      if (_wallet.seed == null && _wallet.hexSeed != null) 'hexSeed': _wallet.hexSeed!,
-      if (_wallet.seed == null && _wallet.privateKey != null) 'private_key': _wallet.privateKey!,
+      if (_wallet.seed == null && _wallet.hexSeed != null)
+        'hexSeed': _wallet.hexSeed!,
+      if (_wallet.seed == null && _wallet.privateKey != null)
+        'private_key': _wallet.privateKey!,
       if (restoreHeightResult != null) ...{'height': restoreHeightResult},
       if (_wallet.passphrase != null) 'passphrase': _wallet.passphrase!
     };
@@ -317,14 +335,19 @@ abstract class WalletKeysViewModelBase with Store {
 
   Future<Uri> getUrl(bool isLegacySeed) async => Uri(
         scheme: _scheme,
-        queryParameters: isLegacySeed ? await _queryParamsForLegacy : await _queryParams,
+        queryParameters:
+            isLegacySeed ? await _queryParamsForLegacy : await _queryParams,
       );
 
   List<TransactionInfo> _getWalletTransactions(WalletBase wallet) {
     if (wallet.type == WalletType.monero) {
       return monero!.getTransactionHistory(wallet).transactions.values.toList();
     } else if (wallet.type == WalletType.wownero) {
-      return wownero!.getTransactionHistory(wallet).transactions.values.toList();
+      return wownero!
+          .getTransactionHistory(wallet)
+          .transactions
+          .values
+          .toList();
     }
     return [];
   }
@@ -338,5 +361,6 @@ abstract class WalletKeysViewModelBase with Store {
     return 0;
   }
 
-  String getRoundedRestoreHeight(int height) => ((height / 1000).floor() * 1000).toString();
+  String getRoundedRestoreHeight(int height) =>
+      ((height / 1000).floor() * 1000).toString();
 }
